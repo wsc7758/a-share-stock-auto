@@ -1,24 +1,27 @@
 name: Auto IPTV Merge & Speed Test
 on:
   schedule:
-    - cron: "0 8 * * *" # 每天早8点自动拉取测速更新
-  workflow_dispatch: # 支持手动点运行
+    - cron: "0 8 * * *"
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # 关键：开启仓库读写权限，解决无法提交tv.txt
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Install Python & requests
         run: |
-          pip install requests
-      - name: Run merge script
-        run: python merge_speed.py
+          python3 -m pip install requests
+      - name: Run merge speed script
+        run: python3 merge_speed.py
       - name: Commit & Push new tv.txt
         run: |
           git config --global user.name "Auto IPTV Bot"
           git config --global user.email "bot@github.com"
           git add tv.txt
-          git commit -m "Auto update best iptv source"
-          git push
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto update best iptv source" && git push)
