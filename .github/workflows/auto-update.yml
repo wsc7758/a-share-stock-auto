@@ -2,9 +2,9 @@ name IPTV自动更新
 on:
   workflow_dispatch:  # 支持页面手动点运行，不用等定时
   schedule:
-    # UTC时间，对应北京时间 早上6点 / 傍晚18点 每日两次更新
-    - cron: '0 22 * * *'
-    - cron: '0 10 * * *'
+    # UTC时间，对应北京时间 早上5点 / 傍晚17点 每日两次更新
+    - cron: '0 5 * * *'
+    - cron: '0 17 * * *'
 
 jobs:
   run_filter:
