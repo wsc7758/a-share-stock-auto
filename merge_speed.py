@@ -202,7 +202,7 @@ def main():
     white_order_bench, white_clean_set, white_name_map = load_white_list_spec()
     channel_link_cache = defaultdict(list)
     with concurrent.futures.ThreadPoolExecutor(max_workers=SOURCE_FETCH_WORKERS) as exe:
-        all_source_data = exe.map(lambda s: fetch_source_channel(s, white_clean_set, white_name_map), source_pool)
+        all_source_data = exe.map(lambda s: fetch_source_channel_index(s, white_clean_set, white_name_map), source_pool)
     for ch_pair_list in all_source_data:
         for ch, url in ch_pair_list:
             channel_link_cache[ch].append(url)
