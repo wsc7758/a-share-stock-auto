@@ -106,7 +106,6 @@ def load_white_list_spec() -> tuple[list[str], set[str]]:
     return order_benchmark, quick_match_set
 
 def fetch_source_channel_index(src_url: str, white_set: set[str]) -> list[tuple[str, str]]:
-    """单源频道索引拉取+前置过滤：仅返回白名单匹配、终端兼容链路"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0 Safari/537.36"
     }
@@ -114,11 +113,13 @@ def fetch_source_channel_index(src_url: str, white_set: set[str]) -> list[tuple[
     try:
         resp = requests.get(src_url, headers=headers, timeout=SOURCE_FETCH_TIMEOUT)
         text = resp.text
+        print(f"【调试】源 {src_url} 原始文本长度：{len(text)}")
         # 标准txt频道匹配规则
         txt_reg = re.compile(r"([^,]+),(http[s]?://[^\n]+)")
         for ch_name, link in txt_reg.findall(text):
             ch_name = ch_name.strip().replace("#genre#", "")
             link = link.strip()
+            print(f"【调试】提取Txt频道：{ch_name}")
             if ch_name in white_set and not is_incompatible_stream(link):
                 valid_pair.append((ch_name, link))
         # m3u8格式匹配规则
@@ -126,10 +127,12 @@ def fetch_source_channel_index(src_url: str, white_set: set[str]) -> list[tuple[
         for ch_name, link in m3u8_reg.findall(text):
             ch_name = ch_name.strip()
             link = link.strip()
+            print(f"【调试】提取M3U8频道：{ch_name}")
             if ch_name in white_set and not is_incompatible_stream(link):
                 valid_pair.append((ch_name, link))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"【调试】拉取源 {src_url} 失败，异常：{str(e)}")
+    print(f"【调试】该源匹配白名单有效频道数量：{len(valid_pair)}")
     return valid_pair
 
 # ===================== 阶段2：流媒体一体化质量评测与链路择优 =====================
