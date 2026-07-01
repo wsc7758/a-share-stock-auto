@@ -8,6 +8,7 @@ on:
 jobs:
   stream-sort-task:
     runs-on: ubuntu-latest
+    timeout-minutes: 12  # 全局最大运行12分钟，卡死自动终止
     permissions:
       contents: write
     steps:
@@ -16,8 +17,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 新增：全局UTF-8编码，解决中文日志乱码
-      - name: 配置UTF-8系统编码
+      - name: 配置UTF-8系统编码，解决中文日志乱码
         run: |
           echo "LC_ALL=en_US.UTF-8" >> $GITHUB_ENV
           echo "LANG=en_US.UTF-8" >> $GITHUB_ENV
@@ -31,8 +31,8 @@ jobs:
           python3 -m pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple
           python3 -m pip install requests m3u8 -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-      - name: 执行标准化分拣流水线 merge_speed.py
-        run: python3 merge_speed.py
+      - name: 执行标准化分拣流水线 merge_speed.py（无缓冲实时日志）
+        run: python3 -u merge_speed.py  # -u 关闭stdout缓冲，立刻打印日志
 
       - name: 自动提交更新输出文件tv.txt
         run: |
