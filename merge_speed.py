@@ -68,20 +68,23 @@ def unified_stream_evaluation(url: str) -> tuple[float, int]:
 
 # ===================== 阶段1：源池拉取与白名单频道预过滤 =====================
 def load_raw_source_pool() -> list[str]:
-    """加载全量直播源池，优先加载标记高速源"""
+    """加载全量直播源池，优先加载标记高速源，修复分割丢失https协议问题"""
     fast_source_group = []
     normal_source_group = []
     with open(SOURCE_FILE, "r", encoding="utf-8") as f:
         raw_lines = [line.strip() for line in f.readlines() if line.strip() and not line.startswith("#")]
     for line in raw_lines:
+        # 区分两种分隔符，只分割第一个分隔符，防止URL内包含冒号被截断
         if "：" in line:
             sep = "："
+            name_part, url_part = line.split(sep, 1)
         elif ":" in line and "http" in line:
             sep = ":"
+            name_part, url_part = line.split(sep, 1)
         else:
+            # 无名称，整行直接作为url
             normal_source_group.append(line.strip())
             continue
-        name_part, url_part = line.split(sep, 1)
         name_part = name_part.strip()
         url_part = url_part.strip()
         if "（快）" in name_part:
@@ -106,11 +109,14 @@ def load_white_list_spec() -> tuple[list[str], set[str]]:
     return order_benchmark, quick_match_set_lower
 
 def fetch_source_channel_index(src_url: str, white_set_lower: set[str]) -> list[tuple[str, str]]:
-    """单源频道索引拉取+前置过滤：兼容大小写匹配，增加调试日志"""
+    """单源频道索引拉取+前置过滤：兼容大小写匹配，自动修复无协议链接，增加调试日志"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0 Safari/537.36"
     }
     valid_pair = []
+    # 兜底自动修复 // 开头缺少https协议的链接
+    if src_url.startswith("//"):
+        src_url = "https:" + src_url
     try:
         resp = requests.get(src_url, headers=headers, timeout=SOURCE_FETCH_TIMEOUT)
         text = resp.text
