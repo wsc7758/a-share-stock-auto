@@ -93,19 +93,20 @@ def load_raw_source_pool() -> list[str]:
     return full_source_list
 
 def load_white_list_spec() -> tuple[list[str], set[str]]:
-    """加载白名单基准序列：有序输出模板 + 哈希快速检索集合"""
+    """加载白名单基准序列：有序输出模板 + 小写哈希快速检索集合（兼容大小写匹配）"""
     order_benchmark = []
-    quick_match_set = set()
+    quick_match_set_lower = set()
     with open(WHITE_LIST_FILE, "r", encoding="utf-8") as f:
         for line in f.readlines():
             ln = line.strip()
             if ln and not ln.startswith("#"):
                 order_benchmark.append(ln)
-                quick_match_set.add(ln)
+                quick_match_set_lower.add(ln.lower())
     print(f"【阶段1-白名单加载】基准频道序列总量：{len(order_benchmark)}")
-    return order_benchmark, quick_match_set
+    return order_benchmark, quick_match_set_lower
 
-def fetch_source_channel_index(src_url: str, white_set: set[str]) -> list[tuple[str, str]]:
+def fetch_source_channel_index(src_url: str, white_set_lower: set[str]) -> list[tuple[str, str]]:
+    """单源频道索引拉取+前置过滤：兼容大小写匹配，增加调试日志"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0 Safari/537.36"
     }
@@ -113,25 +114,27 @@ def fetch_source_channel_index(src_url: str, white_set: set[str]) -> list[tuple[
     try:
         resp = requests.get(src_url, headers=headers, timeout=SOURCE_FETCH_TIMEOUT)
         text = resp.text
-        print(f"【调试】源 {src_url} 原始文本长度：{len(text)}")
+        print(f"【调试】源地址 {src_url} 拉取成功，文本长度：{len(text)}")
         # 标准txt频道匹配规则
         txt_reg = re.compile(r"([^,]+),(http[s]?://[^\n]+)")
         for ch_name, link in txt_reg.findall(text):
             ch_name = ch_name.strip().replace("#genre#", "")
             link = link.strip()
-            print(f"【调试】提取Txt频道：{ch_name}")
-            if ch_name in white_set and not is_incompatible_stream(link):
+            ch_low = ch_name.lower()
+            print(f"【调试-TXT提取频道】{ch_name}")
+            if ch_low in white_set_lower and not is_incompatible_stream(link):
                 valid_pair.append((ch_name, link))
         # m3u8格式匹配规则
         m3u8_reg = re.compile(r"#EXTINF:-1,([^\n]+)\n(http[s]?://[^\n]+)")
         for ch_name, link in m3u8_reg.findall(text):
             ch_name = ch_name.strip()
             link = link.strip()
-            print(f"【调试】提取M3U8频道：{ch_name}")
-            if ch_name in white_set and not is_incompatible_stream(link):
+            ch_low = ch_name.lower()
+            print(f"【调试-M3U8提取频道】{ch_name}")
+            if ch_low in white_set_lower and not is_incompatible_stream(link):
                 valid_pair.append((ch_name, link))
     except Exception as e:
-        print(f"【调试】拉取源 {src_url} 失败，异常：{str(e)}")
+        print(f"【调试】源地址 {src_url} 拉取失败，异常详情：{str(e)}")
     print(f"【调试】该源匹配白名单有效频道数量：{len(valid_pair)}")
     return valid_pair
 
@@ -180,11 +183,11 @@ def generate_output_file(white_order: list[str], filter_map: dict[str, list[str]
 def main():
     # 阶段1 完整执行
     source_pool = load_raw_source_pool()
-    white_order_bench, white_match_set = load_white_list_spec()
+    white_order_bench, white_match_set_lower = load_white_list_spec()
     channel_link_cache = defaultdict(list)
     # 并发拉取全部源频道索引并前置过滤
     with concurrent.futures.ThreadPoolExecutor(max_workers=SOURCE_FETCH_WORKERS) as exe:
-        all_source_channel_data = exe.map(lambda s: fetch_source_channel_index(s, white_match_set), source_pool)
+        all_source_channel_data = exe.map(lambda s: fetch_source_channel_index(s, white_match_set_lower), source_pool)
     for ch_pair_list in all_source_channel_data:
         for ch, url in ch_pair_list:
             channel_link_cache[ch].append(url)
