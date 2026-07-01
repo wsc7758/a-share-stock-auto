@@ -10,8 +10,9 @@ SOURCE_FILE = "sources.txt"
 WHITE_LIST_FILE = "channel_whitelist.txt"
 OUTPUT_TXT = "tv.txt"
 TEST_TIMEOUT = 2.0
-MIN_VIDEO_HEIGHT = 720  # 低于720p直接剔除
-# 内网黑名单，过滤局域网不可外网播放地址
+MIN_VIDEO_HEIGHT = 720
+MAX_PER_CHANNEL = 3  # 每个频道仅保留3条线路
+# 内网/局域网黑名单
 BLACK_HOST = {"127.", "192.", "10.", "172.", "localhost", ":8801", ":808"}
 # 并发控制
 SOURCE_CHECK_WORKER = 8
@@ -19,14 +20,14 @@ CHANNEL_TEST_WORKER = 12
 
 # ===================== 工具函数 =====================
 def is_private_url(url: str) -> bool:
-    """判断是否内网地址"""
+    """判断内网地址直接丢弃"""
     for seg in BLACK_HOST:
         if seg in url:
             return True
     return False
 
 def check_source_alive(url: str) -> tuple[bool, str]:
-    """需求1：预检测源地址是否有效，失效剔除"""
+    """步骤1：预校验源文件是否可访问，失效剔除"""
     headers = {"User-Agent": "Mozilla/5.0 Android TV"}
     try:
         resp = requests.get(url, headers=headers, timeout=3)
@@ -39,7 +40,7 @@ def check_source_alive(url: str) -> tuple[bool, str]:
         return False, url
 
 def load_source_priority() -> list[str]:
-    """读取sources，区分（快）优先源，返回源名称+url配对"""
+    """读取sources，优先（快）源前置，再批量过滤失效源"""
     fast_group = []
     normal_group = []
     with open(SOURCE_FILE, "r", encoding="utf-8") as f:
@@ -55,42 +56,41 @@ def load_source_priority() -> list[str]:
             fast_group.append((name, url))
         else:
             normal_group.append((name, url))
-    # 快源放前面
     all_source_pairs = fast_group + normal_group
     source_urls = [u for _, u in all_source_pairs]
-    print(f"总计待检测源数量：{len(source_urls)}（高速源{len(fast_group)}个）")
+    print(f"待检测源总数：{len(source_urls)}，高速标记源：{len(fast_group)}")
 
-    # 需求1：批量检测线路有效性，剔除失效源
+    # 批量校验源存活
     valid_urls = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=SOURCE_CHECK_WORKER) as exe:
         results = exe.map(check_source_alive, source_urls)
-    alive_count = 0
-    dead_count = 0
+    alive = 0
+    dead = 0
     for ok, url in results:
         if ok:
             valid_urls.append(url)
-            alive_count += 1
+            alive += 1
         else:
-            dead_count += 1
-    print(f"源检测完成：有效{alive_count}条，失效剔除{dead_count}条")
+            dead += 1
+    print(f"源校验完成：有效{alive}，失效剔除{dead}")
     return valid_urls
 
 def fetch_all_channel_from_source(source_url: str) -> list[tuple[str, str]]:
-    """拉取单个源内所有频道名称+链接"""
+    """抓取源内所有频道，兼容txt/m3u8两种格式"""
     channels = []
     headers = {"User-Agent": "Mozilla/5.0 Android TV"}
     try:
         resp = requests.get(source_url, headers=headers, timeout=4)
         resp.encoding = resp.apparent_encoding
         text = resp.text
-        # 标准 txt 格式 名称,url
+        # txt 格式 频道,链接
         txt_reg = re.compile(r"([^,]+),(http[s]?://[^\n]+)")
         for ch_name, link in txt_reg.findall(text):
             ch_name = ch_name.strip().replace("#genre#", "").strip()
             link = link.strip()
             if ch_name and link and not is_private_url(link):
                 channels.append((ch_name, link))
-        # m3u8 格式
+        # m3u8 标准格式
         m3u8_reg = re.compile(r"#EXTINF:-1,([^\n]+)\n(http[s]?://[^\n]+)")
         for ch_name, link in m3u8_reg.findall(text):
             ch_name = ch_name.strip()
@@ -101,19 +101,21 @@ def fetch_all_channel_from_source(source_url: str) -> list[tuple[str, str]]:
         pass
     return channels
 
-def load_white_list() -> set[str]:
-    """加载白名单频道集合，只处理这些频道"""
+def load_white_list() -> tuple[list[str], set[str]]:
+    """读取白名单：保存原始输出顺序 + 快速匹配集合"""
+    white_order = []
     white_set = set()
     with open(WHITE_LIST_FILE, "r", encoding="utf-8") as f:
         for line in f.readlines():
             line = line.strip()
             if line and not line.startswith("#"):
+                white_order.append(line)
                 white_set.add(line)
-    print(f"白名单待处理频道总数：{len(white_set)}")
-    return white_set
+    print(f"白名单频道总量：{len(white_order)}")
+    return white_order, white_set
 
 def get_stream_resolution(stream_url: str) -> int:
-    """获取流最大垂直分辨率，失败返回0"""
+    """获取流最大垂直分辨率，单流无标签默认720"""
     headers = {"User-Agent": "Mozilla/5.0 Android TV"}
     try:
         resp = requests.get(stream_url, headers=headers, timeout=2)
@@ -127,14 +129,13 @@ def get_stream_resolution(stream_url: str) -> int:
                     if h > max_h:
                         max_h = h
         else:
-            # 无分片信息默认标记720
             max_h = 720
         return max_h
     except Exception:
         return 0
 
 def test_stream_delay(url: str) -> float:
-    """测速，返回延迟秒，超时返回极大值"""
+    """测速，超时返回极大值"""
     headers = {"User-Agent": "Mozilla/5.0 Android TV"}
     start = time.time()
     try:
@@ -145,56 +146,71 @@ def test_stream_delay(url: str) -> float:
     except Exception:
         return 9999.0
 
+def get_source_priority_score(url: str) -> int:
+    """判断线路优先级：咪咕/央视频=0（最高），其他普通=1"""
+    low_key = url.lower()
+    # 咪咕标识
+    if "migu" in low_key or "miguvideo" in low_key:
+        return 0
+    # 央视频/央视官方标识
+    if "cctv.cn" in low_key or "yangshipin" in low_key or "live.cctv" in low_key:
+        return 0
+    return 1
+
 def main():
-    # 步骤1：加载并校验所有源，剔除失效线路
+    # 1. 过滤失效源
     valid_source_urls = load_source_priority()
     if not valid_source_urls:
-        print("无有效直播源，程序退出")
+        print("无可用直播源，程序退出")
         return
 
-    # 步骤2：拉取所有源频道，仅保留白名单内节目
-    white_channels = load_white_list()
+    # 2. 读取白名单（严格输出顺序）
+    white_order_list, white_set = load_white_list()
+
+    # 3. 抓取所有频道，仅保留白名单内节目
     ch_link_map = defaultdict(list)
-
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as exe:
-        all_source_channels = exe.map(fetch_all_channel_from_source, valid_source_urls)
-
+        all_source_channels = exe.map(fetch_all_channel_from_source, valid_source_url)
     for ch_list in all_source_channels:
         for ch_name, link in ch_list:
-            if ch_name in white_channels:
+            if ch_name in white_set:
                 ch_link_map[ch_name].append(link)
-    print(f"白名单频道匹配到线路总量：sum([len(v) for v in ch_link_map.values()])")
 
-    # 步骤3：对匹配到的白名单节目统一测速、测分辨率，过滤<720P
-    final_channel_data = []
-    for ch_name, url_list in ch_link_map.items():
+    # 4. 按白名单顺序遍历处理每个频道
+    final_output = []
+    for ch_name in white_order_list:
+        if ch_name not in ch_link_map:
+            continue
+        url_list = ch_link_map
         temp_store = []
-        # 并发测速+分辨率
+        # 并发测速+分辨率检测
         with concurrent.futures.ThreadPoolExecutor(max_workers=CHANNEL_TEST_WORKER) as exe:
             delay_res = list(exe.map(test_stream_delay, url_list))
             res_res = list(exe.map(get_stream_resolution, url_list))
+        # 组装数据并过滤720P以下
         for link, delay, height in zip(url_list, delay_res, res_res):
-            # 需求3：剔除低于720P源
             if height < MIN_VIDEO_HEIGHT:
                 continue
+            priority = get_source_priority_score(link)
             temp_store.append({
-                "url": link,
+                "priority": priority,
                 "delay": delay,
-                "height": height
+                "height": -height,  # 负号实现降序排序
+                "url": link
             })
         if not temp_store:
             continue
+        # 多重排序：1.咪咕/央视频优先 2.延迟从小到大 3.分辨率从高到低
+        temp_store.sort(key=lambda x: (x["priority"], x["delay"], x["height"]))
+        # 只取前3条
+        top3 = temp_store[:MAX_PER_CHANNEL]
+        for item in top3:
+            final_output.append(f"{ch_name},{item['url']}")
 
-        # 先按延迟升序（速度从快到慢），再按分辨率降序（画质优优先）
-        temp_store.sort(key=lambda x: (x["delay"], -x["height"]))
-        # 需求4：全部保留，不限3条
-        for item in temp_store:
-            final_channel_data.append(f"{ch_name},{item['url']}")
-
-    # 写入输出文件
+    # 写入标准txt，三端通用
     with open(OUTPUT_TXT, "w", encoding="utf-8") as f:
-        f.write("\n".join(final_channel_data))
-    print(f"处理完成，输出有效线路总数：{len(final_channel_data)}")
+        f.write("\n".join(final_output))
+    print(f"筛选完成，总有效线路：{len(final_output)}")
 
 if __name__ == "__main__":
     main()
