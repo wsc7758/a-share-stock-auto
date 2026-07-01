@@ -10,12 +10,17 @@ jobs:
   stream-sort-task:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # 授予仓库读写权限，用于提交更新tv.txt
+      contents: write
     steps:
       - name: 拉取仓库完整代码
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: 配置系统UTF-8编码，解决中文日志乱码
+        run: |
+          echo "LC_ALL=en_US.UTF-8" >> $GITHUB_ENV
+          echo "PYTHONIOENCODING=utf-8" >> $GITHUB_ENV
 
       - name: 配置国内公共DNS，优化国内源访问链路
         run: echo "nameserver 223.5.5.5" | sudo tee /etc/resolv.conf
