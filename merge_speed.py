@@ -3,33 +3,42 @@ import concurrent.futures
 import re
 from collections import defaultdict
 import time
+from urllib.parse import urlparse
 
-# 配置文件路径
+# 配置
 SOURCE_FILE = "sources.txt"
 WHITE_LIST_FILE = "channel_whitelist.txt"
 OUTPUT_TXT = "tv.txt"
-TEST_TIMEOUT = 3
+TEST_TIMEOUT = 2.5   # 缩短超时，慢源直接丢弃
 MAX_BEST_PER_CHANNEL = 3
+# 内网/局域网黑名单，直接过滤
+BLACK_HOST = {"127.", "192.", "10.", "172.", "localhost", ":8801", ":808"}
 
-# 读取白名单频道【有序列表，保留写入顺序，不打乱】
+# 有序读取白名单
 def load_white_list_ordered():
     white_channels_order = []
     with open(WHITE_LIST_FILE, "r", encoding="utf-8") as f:
         for line in f.readlines():
             line = line.strip()
-            # 跳过注释 #开头、空行
             if not line or line.startswith("#"):
                 continue
             white_channels_order.append(line)
     return white_channels_order
 
-# 读取所有直播源链接
+# 读取源列表
 def load_source_urls():
     with open(SOURCE_FILE, "r", encoding="utf-8") as f:
         lines = [i.strip() for i in f.readlines() if i.strip()]
     return lines
 
-# 拉取txt/m3u源，提取频道+链接
+# 过滤内网/端口垃圾源
+def filter_private_url(url):
+    for black in BLACK_HOST:
+        if black in url:
+            return False
+    return True
+
+# 拉取txt/m3u源
 def fetch_iptv(url):
     channels = []
     try:
@@ -37,98 +46,96 @@ def fetch_iptv(url):
         resp = requests.get(url, headers=headers, timeout=5)
         resp.encoding = resp.apparent_encoding
         text = resp.text
-        # 标准txt匹配：频道名,url
+        # txt格式
         txt_pattern = re.compile(r"([^,]+),(http[^\n]+)")
         txt_matches = txt_pattern.findall(text)
         for name, link in txt_matches:
             name = name.strip().replace("#genre#","").strip()
-            if name and link:
-                channels.append((name, link.strip()))
-        # m3u格式匹配
+            link = link.strip()
+            if name and link and filter_private_url(link):
+                channels.append((name, link))
+        # m3u格式
         m3u_pattern = re.compile(r"#EXTINF:-1,([^\n]+)\n(http[^\n]+)")
         m3u_matches = m3u_pattern.findall(text)
         for name, link in m3u_matches:
             name = name.strip()
-            if name and link:
-                channels.append((name, link.strip()))
-    except Exception as e:
+            link = link.strip()
+            if name and link and filter_private_url(link):
+                channels.append((name, link))
+    except Exception:
         pass
     return channels
 
-# 测速单条播放链接
-def test_speed(url):
+# 真实分片测速（替代HEAD，准确度大幅提升）
+def test_real_speed(url):
     start = time.time()
     try:
         headers = {"User-Agent":"Mozilla/5.0 Android TV"}
-        r = requests.head(url, headers=headers, timeout=TEST_TIMEOUT, allow_redirects=True)
-        cost = time.time() - start
-        return round(cost,3)
-    except:
+        # 只请求前1KB分片，模拟播放加载
+        r = requests.get(url, headers=headers, timeout=TEST_TIMEOUT, stream=True, allow_redirects=True)
+        r.raw.read(1024)
+        cost = round(time.time() - start, 3)
+        return cost
+    except Exception:
         return 9999
 
 def main():
-    # 读取【有序】白名单（关键改动：不用set，用list保存原始顺序）
     white_order_list = load_white_list_ordered()
-    all_channels = []
     source_urls = load_source_urls()
+    all_channels = []
 
-    # 多线程拉取全部外部直播源
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    # 拉取所有源
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
         res_list = executor.map(fetch_iptv, source_urls)
         for res in res_list:
             all_channels.extend(res)
 
-    # 按频道名分组存储所有线路
+    # 频道分组 + 同域名去重
     group = defaultdict(list)
+    domain_set = defaultdict(set)
     for name,url in all_channels:
-        group[name].append(url)
+        dom = urlparse(url).netloc
+        if dom not in domain_set[name]:
+            domain_set[name].add(dom)
+            group[name].append(url)
 
     final_output = []
-    # 固定分组标题
     final_output.append("央视频道,#genre#")
 
-    # 1. 先遍历白名单里所有CCTV频道，严格按白名单先后输出
+    # 按白名单顺序输出CCTV
     for ch_name in white_order_list:
-        if ch_name.startswith("CCTV"):
-            if ch_name not in group:
-                continue
+        if ch_name.startswith("CCTV") and ch_name in group:
             urls = group[ch_name]
             test_map = {}
-            # 多线程测速该频道全部线路
-            with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
-                speed_res = executor.map(test_speed, urls)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
+                speed_res = executor.map(test_real_speed, urls)
                 for u,s in zip(urls, speed_res):
                     test_map[u] = s
-            # 过滤超时失效源，按延迟从小到大排序
-            valid_urls = sorted([u for u in test_map if test_map[u] < TEST_TIMEOUT], key=lambda x:test_map[x])
-            top_urls = valid_urls[:MAX_BEST_PER_CHANNEL]
-            # 写入输出列表
-            for u in top_urls:
+            # 只保留超时内线路，按延迟升序
+            valid = sorted([u for u in test_map if test_map[u] < TEST_TIMEOUT], key=lambda x:test_map[x])
+            top = valid[:MAX_BEST_PER_CHANNEL]
+            for u in top:
                 final_output.append(f"{ch_name},{u}")
 
-    # 分割卫视分组
     final_output.append("\n卫视频道,#genre#")
-
-    # 2. 再遍历白名单里所有卫视频道，严格按白名单先后输出
+    # 按白名单顺序输出卫视
     for ch_name in white_order_list:
-        if not ch_name.startswith("CCTV"):
-            if ch_name not in group:
-                continue
+        if not ch_name.startswith("CCTV") and ch_name in group:
             urls = group[ch_name]
             test_map = {}
-            with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
-                speed_res = executor.map(test_speed, urls)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
+                speed_res = executor.map(test_real_speed, urls)
                 for u,s in zip(urls, speed_res):
                     test_map[u] = s
-            valid_urls = sorted([u for u in test_map if test_map[u] < TEST_TIMEOUT], key=lambda x:test_map[x])
-            top_urls = valid_urls[:MAX_BEST_PER_CHANNEL]
-            for u in top_urls:
+            valid = sorted([u for u in test_map if test_map[u] < TEST_TIMEOUT], key=lambda x:test_map[x])
+            top = valid[:MAX_BEST_PER_CHANNEL]
+            for u in top:
                 final_output.append(f"{ch_name},{u}")
 
-    # 写入tv.txt，完全保持白名单原始顺序
+    # 写入文件
     with open(OUTPUT_TXT, "w", encoding="utf-8") as f:
         f.write("\n".join(final_output))
-    print(f"过滤完成，仅保留央视+卫视，有效线路总数：{len(final_output)}")
+    print(f"优化完成，有效优质线路：{len(final_output)}")
 
 if __name__ == "__main__":
     main()
