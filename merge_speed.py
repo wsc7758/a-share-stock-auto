@@ -38,14 +38,15 @@ def get_stream_priority(url: str) -> int:
     return 1
 
 def unified_stream_evaluation(url: str) -> tuple[float, int]:
-    """一体化评测接口：单次HTTP请求完成延迟探测+HLS分辨率解析，消除重复IO"""
+    """一体化评测接口：单次HTTP请求完成延迟探测+HLS分辨率解析，关闭SSL校验"""
     headers = {"User-Agent": "Mozilla/5.0 AndroidTV"}
     start_ts = time.time()
     delay = 9999.0
     resp_text = ""
     # 网络延迟探测
     try:
-        resp = requests.get(url, headers=headers, timeout=STREAM_TEST_TIMEOUT, stream=True)
+        # 新增 verify=False 关闭SSL校验
+        resp = requests.get(url, headers=headers, timeout=STREAM_TEST_TIMEOUT, stream=True, verify=False)
         resp.raw.read(256)
         delay = round(time.time() - start_ts, 3)
         resp_text = resp.text
@@ -109,16 +110,17 @@ def load_white_list_spec() -> tuple[list[str], set[str]]:
     return order_benchmark, quick_match_set_lower
 
 def fetch_source_channel_index(src_url: str, white_set_lower: set[str]) -> list[tuple[str, str]]:
-    """单源频道索引拉取+前置过滤：兼容大小写匹配，自动修复无协议链接，增加调试日志"""
+    """单源频道索引拉取+前置过滤：兼容大小写匹配，自动修复无协议链接，关闭SSL校验"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0 Safari/537.36"
     }
     valid_pair = []
-    # 兜底自动修复 // 开头缺少https协议的链接
+    # 自动修复 // 开头缺少https协议的链接
     if src_url.startswith("//"):
         src_url = "https:" + src_url
     try:
-        resp = requests.get(src_url, headers=headers, timeout=SOURCE_FETCH_TIMEOUT)
+        # 新增 verify=False 关闭SSL证书校验，解决IP证书不匹配报错
+        resp = requests.get(src_url, headers=headers, timeout=SOURCE_FETCH_TIMEOUT, verify=False)
         text = resp.text
         print(f"【调试】源地址 {src_url} 拉取成功，文本长度：{len(text)}")
         # 标准txt频道匹配规则
