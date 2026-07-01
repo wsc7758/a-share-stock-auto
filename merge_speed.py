@@ -68,7 +68,8 @@ def load_sources() -> list[str]:
         if ok:
             valid_src.append(u)
     print(f"步骤1完成：总源{len(all_src)}，有效源{len(valid_src)}")
-    return valid
+    # 修复变量名错误：返回 valid_src 而非 valid
+    return valid_src
 
 def load_white_list() -> tuple[list[str], set[str]]:
     """读取白名单：保存输出顺序+快速查询集合"""
@@ -81,7 +82,7 @@ def load_white_list() -> tuple[list[str], set[str]]:
                 order_list.append(ln)
                 name_set.add(ln)
     print(f"白名单频道总数：{len(order_list)}")
-    return order_list, name
+    return order_list, name_set
 
 def fetch_valid_channels(src_url: str, white_set: set[str]) -> list[tuple[str, str]]:
     """合并：拉取频道 + 直接过滤非白名单（步骤2前置过滤，节省内存）"""
@@ -105,7 +106,7 @@ def fetch_valid_channels(src_url: str, white_set: set[str]) -> list[tuple[str, s
                 res_list.append((ch, link))
     except Exception:
         pass
-    return res
+    return res_list
 
 def get_priority(url: str) -> int:
     """咪咕/央视频优先：0最高，普通1"""
@@ -125,18 +126,21 @@ def test_stream(url: str) -> tuple[float, int]:
         r = requests.get(url, timeout=TEST_TIMEOUT, headers=headers, stream=True)
         r.raw.read(256)
         delay = round(time.time() - start, 3)
+        resp_text = r.text
     except Exception:
         delay = 9999.0
+        resp_text = ""
     # 解析分辨率
+    max_h = 720
     try:
-        pl = m3u8.loads(r.text if delay < 999 else requests.get(url, timeout=2, headers=headers).text)
-        max_h = 720
-        if pl.is_variant:
-            max_h = 0
-            for p in pl.playlists:
-                if hasattr(p.stream_info, "resolution") and p.stream_info.resolution:
-                    _, h = p.stream_info.resolution.split("x")
-                    max_h = max(max_h, int(h))
+        if resp_text:
+            pl = m3u8.loads(resp_text)
+            if pl.is_variant:
+                max_h = 0
+                for p in pl.playlists:
+                    if hasattr(p.stream_info, "resolution") and p.stream_info.resolution:
+                        _, h = p.stream_info.resolution.split("x")
+                        max_h = max(max_h, int(h))
     except Exception:
         max_h = 720
     return delay, max_h
