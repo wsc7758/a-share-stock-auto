@@ -40,16 +40,21 @@ def check_source_alive(url: str) -> tuple[bool, str]:
         return False, url
 
 def load_source_priority() -> list[str]:
-    """读取sources，优先（快）源前置，再批量过滤失效源"""
+    """读取sources，兼容中英文冒号，优先（快）源前置，再批量过滤失效源"""
     fast_group = []
     normal_group = []
     with open(SOURCE_FILE, "r", encoding="utf-8") as f:
         lines = [l.strip() for l in f.readlines() if l.strip() and not l.startswith("#")]
     for line in lines:
-        if "：" not in line:
+        # 兼容中文、英文冒号两种分隔符
+        if "：" in line:
+            sep = "："
+        elif ":" in line and line.count("http") == 1:
+            sep = ":"
+        else:
             normal_group.append(("", line))
             continue
-        name, url = line.split("：", 1)
+        name, url = line.split(sep, 1)
         name = name.strip()
         url = url.strip()
         if "（快）" in name:
@@ -158,7 +163,7 @@ def get_source_priority_score(url: str) -> int:
     return 1
 
 def main():
-    # 1. 过滤失效源
+    # 1. 过滤失效源（已修复变量名拼写错误）
     valid_source_urls = load_source_priority()
     if not valid_source_urls:
         print("无可用直播源，程序退出")
@@ -167,10 +172,10 @@ def main():
     # 2. 读取白名单（严格输出顺序）
     white_order_list, white_set = load_white_list()
 
-    # 3. 抓取所有频道，仅保留白名单内节目
+    # 3. 抓取所有频道，仅保留白名单内节目（修正valid_source_url → valid_source_urls）
     ch_link_map = defaultdict(list)
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as exe:
-        all_source_channels = exe.map(fetch_all_channel_from_source, valid_source_url)
+        all_source_channels = exe.map(fetch_all_channel_from_source, valid_source_urls)
     for ch_list in all_source_channels:
         for ch_name, link in ch_list:
             if ch_name in white_set:
@@ -181,7 +186,6 @@ def main():
     for ch_name in white_order_list:
         if ch_name not in ch_link_map:
             continue
-        # 修复之前的笔误：正确读取该频道的链接列表
         url_list = ch_link_map[ch_name]
         temp_store = []
         # 并发测速+分辨率检测
