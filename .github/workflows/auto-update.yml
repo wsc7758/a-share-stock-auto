@@ -1,4 +1,4 @@
-name IPTV标准化流媒体分拣流水线
+name: IPTV标准化流媒体分拣流水线
 on:
   workflow_dispatch:  # 页面手动一键触发执行
   schedule:
@@ -12,23 +12,23 @@ jobs:
     permissions:
       contents: write  # 授予仓库读写权限，用于提交更新tv.txt
     steps:
-      - name 拉取仓库完整代码
+      - name: 拉取仓库完整代码
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name 配置国内公共DNS，优化国内源访问链路
+      - name: 配置国内公共DNS，优化国内源访问链路
         run: echo "nameserver 223.5.5.5" | sudo tee /etc/resolv.conf
 
-      - name 安装Python运行依赖（清华国内镜像，规避海外下载超时）
+      - name: 安装Python运行依赖（清华国内镜像，规避海外下载超时）
         run: |
           python3 -m pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple
           python3 -m pip install requests m3u8 -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-      - name 执行标准化分拣流水线 merge_speed.py
+      - name: 执行标准化分拣流水线 merge_speed.py
         run: python3 merge_speed.py
 
-      - name 自动提交更新输出文件tv.txt（无变更不生成空提交记录）
+      - name: 自动提交更新输出文件tv.txt（无变更不生成空提交记录）
         run: |
           git config --global user.name "IPTV-Sort-Bot"
           git config --global user.email "auto-bot@iptv.local"
