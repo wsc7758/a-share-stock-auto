@@ -1,31 +1,36 @@
-name: IPTV自动更新
+name IPTV标准化流媒体分拣流水线
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # 页面手动一键触发执行
   schedule:
+    # UTC时区定时：北京时间06:00 / 18:00
     - cron: '0 22 * * *'
     - cron: '0 10 * * *'
+
 jobs:
-  run_filter:
+  stream-sort-task:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write  # 授予仓库读写权限，用于提交更新tv.txt
     steps:
-      - name: 拉取仓库全部代码
+      - name 拉取仓库完整代码
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: 配置国内DNS，优化访问国内链接速度
-        run: |
-          echo "nameserver 223.5.5.5" | sudo tee /etc/resolv.conf
-      - name: 安装Python依赖（清华国内源，避免国外超时报错）
+
+      - name 配置国内公共DNS，优化国内源访问链路
+        run: echo "nameserver 223.5.5.5" | sudo tee /etc/resolv.conf
+
+      - name 安装Python运行依赖（清华国内镜像，规避海外下载超时）
         run: |
           python3 -m pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple
           python3 -m pip install requests m3u8 -i https://pypi.tuna.tsinghua.edu.cn/simple
-      - name: 执行高清线路筛选脚本
+
+      - name 执行标准化分拣流水线 merge_speed.py
         run: python3 merge_speed.py
-      - name: 自动提交更新tv.txt（无线路变更不产生空提交）
+
+      - name 自动提交更新输出文件tv.txt（无变更不生成空提交记录）
         run: |
-          git config --global user.name "IPTV-Bot"
-          git config --global user.email "bot@github.com"
+          git config --global user.name "IPTV-Sort-Bot"
+          git config --global user.email "auto-bot@iptv.local"
           git add tv.txt
-          git diff --quiet && git diff --staged || (git commit -m "自动高清筛选｜咪咕央视频优先" && git push)
+          git diff --quiet && git diff --staged || (git commit -m "流水线自动更新｜官方源优先｜720P+大屏链路" && git push)
