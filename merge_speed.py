@@ -10,6 +10,7 @@ SOURCE_FILE = "sources.txt"
 WHITE_LIST_FILE = "channel_whitelist.txt"
 OUTPUT_TXT = "tv.txt"
 TEST_TIMEOUT = 2.0
+SOURCE_CHECK_TIMEOUT = 6.0  # 源存活检测延长至6秒，解决国外访问国内源超时
 MIN_HEIGHT = 720  # 低于720p直接剔除
 MAX_KEEP = 3      # 每个频道保留最优3条
 # 三端不兼容/内网黑名单
@@ -28,19 +29,24 @@ def is_bad_url(url: str) -> bool:
     return False
 
 def check_source_alive(url: str) -> tuple[bool, str]:
-    """步骤1：校验源文件是否存活，失效直接丢弃"""
-    headers = {"User-Agent":"Mozilla/5.0 AndroidTV"}
+    """步骤1：放宽校验规则，不再误杀国内有效源"""
+    # 模拟电脑浏览器UA，避免接口拦截
+    headers = {
+        "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
     try:
-        resp = requests.get(url, timeout=3, headers=headers)
-        resp.raise_for_status()
-        if len(resp.text.strip()) < 10:
+        resp = requests.get(url, timeout=SOURCE_CHECK_TIMEOUT, headers=headers)
+        # 只判断HTTP状态码，不再限制文本长度
+        if 200 <= resp.status_code < 400:
+            return True, url
+        else:
             return False, url
-        return True, url
     except Exception:
+        # 超时/连接失败标记失效
         return False, url
 
 def load_sources() -> list[str]:
-    """读取sources，优先带（快）标记源，再批量校验存活（步骤1）"""
+    """读取sources，优先带（快）标记源，批量校验存活"""
     fast_src = []
     normal_src = []
     with open(SOURCE_FILE, "r", encoding="utf-8") as f:
@@ -68,7 +74,6 @@ def load_sources() -> list[str]:
         if ok:
             valid_src.append(u)
     print(f"步骤1完成：总源{len(all_src)}，有效源{len(valid_src)}")
-    # 修复变量名错误：返回 valid_src 而非 valid
     return valid_src
 
 def load_white_list() -> tuple[list[str], set[str]]:
@@ -86,7 +91,9 @@ def load_white_list() -> tuple[list[str], set[str]]:
 
 def fetch_valid_channels(src_url: str, white_set: set[str]) -> list[tuple[str, str]]:
     """合并：拉取频道 + 直接过滤非白名单（步骤2前置过滤，节省内存）"""
-    headers = {"User-Agent":"Mozilla/5.0 AndroidTV"}
+    headers = {
+        "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
     res_list = []
     try:
         text = requests.get(src_url, timeout=4, headers=headers).text
@@ -149,7 +156,7 @@ def main():
     # 步骤1：检测并过滤失效源
     valid_sources = load_sources()
     if not valid_sources:
-        print("无有效直播源，退出")
+        print("无可用直播源，退出")
         return
     # 加载白名单（输出顺序+过滤集合）
     white_order, white_set = load_white_list()
