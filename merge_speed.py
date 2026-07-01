@@ -202,14 +202,19 @@ def main():
     white_order_bench, white_clean_set, white_name_map = load_white_list_spec()
     channel_link_cache = defaultdict(list)
     with concurrent.futures.ThreadPoolExecutor(max_workers=SOURCE_FETCH_WORKERS) as exe:
-        all_source_data = exe.map(lambda s: fetch_source_channel_index(s, white_clean_set, white_name_map), source_pool)
-    for ch_pair_list in all_source_data:
-        for ch, url in ch_pair_list:
-            channel_link_cache[ch].append(url)
+        # 新增timeout兜底，单源8秒未返回直接抛弃
+        all_source_data = exe.map(lambda s: fetch_source_channel_index(s, white_clean_set, white_name_map), source_pool, timeout=8)
+    # 捕获并发超时异常，防止整体崩溃
+    try:
+        for ch_pair_list in all_source_data:
+            if ch_pair_list is None:
+                continue
+            for ch, url in ch_pair_list:
+                channel_link_cache[ch].append(url)
+    except concurrent.futures.TimeoutError:
+        print("【警告】部分直播源拉取超时，已自动跳过")
+
     print(f"【阶段1完成】预过滤后待评测频道数量：{len(channel_link_cache)}")
     qualified_links = evaluate_and_filter_streams(channel_link_cache)
     print(f"【阶段2完成】完成画质测速的有效频道数量：{len(qualified_links)}")
     generate_output_file(white_order_bench, qualified_links)
-
-if __name__ == "__main__":
-    main()
