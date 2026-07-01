@@ -10,18 +10,15 @@ SOURCE_FILE = "sources.txt"
 WHITE_LIST_FILE = "channel_whitelist.txt"
 OUTPUT_TXT = "tv.txt"
 STREAM_TEST_TIMEOUT = 2.0
-MIN_VERTICAL_RES = 720       # 最低大屏垂直分辨率阈值
-MAX_STREAM_PER_CH = 3        # 单频道保留最优链路条数
-SOURCE_FETCH_TIMEOUT = 6     # 源索引拉取超时
-# 终端不兼容协议/内网地址过滤池
+MIN_VERTICAL_RES = 720
+MAX_STREAM_PER_CH = 3
+SOURCE_FETCH_TIMEOUT = 6
 INCOMPATIBLE_FILTER = {"127.", "192.168.", "10.", "172.", "localhost", "rtmp://", "igmp://"}
-# 并发线程池容量
 SOURCE_FETCH_WORKERS = 6
 STREAM_EVAL_WORKERS = 10
 
 # ===================== 底层工具能力函数 =====================
 def is_incompatible_stream(url: str) -> bool:
-    """校验流媒体链路是否为终端不兼容类型"""
     url_lower = url.lower()
     for keyword in INCOMPATIBLE_FILTER:
         if keyword in url_lower:
@@ -29,7 +26,6 @@ def is_incompatible_stream(url: str) -> bool:
     return False
 
 def get_stream_priority(url: str) -> int:
-    """流媒体源分级打分：0=咪咕/央视频官方最高优先级，1=第三方普通源"""
     url_lower = url.lower()
     if "migu" in url_lower or "miguvideo" in url_lower:
         return 0
@@ -38,21 +34,17 @@ def get_stream_priority(url: str) -> int:
     return 1
 
 def unified_stream_evaluation(url: str) -> tuple[float, int]:
-    """一体化评测接口：单次HTTP请求完成延迟探测+HLS分辨率解析，关闭SSL校验"""
     headers = {"User-Agent": "Mozilla/5.0 AndroidTV"}
     start_ts = time.time()
     delay = 9999.0
     resp_text = ""
-    # 网络延迟探测
     try:
-        # 新增 verify=False 关闭SSL校验
         resp = requests.get(url, headers=headers, timeout=STREAM_TEST_TIMEOUT, stream=True, verify=False)
         resp.raw.read(256)
         delay = round(time.time() - start_ts, 3)
         resp_text = resp.text
     except Exception:
         pass
-    # HLS分片分辨率解析
     max_vertical = 720
     try:
         if resp_text:
@@ -69,13 +61,11 @@ def unified_stream_evaluation(url: str) -> tuple[float, int]:
 
 # ===================== 阶段1：源池拉取与白名单频道预过滤 =====================
 def load_raw_source_pool() -> list[str]:
-    """加载全量直播源池，优先加载标记高速源，修复分割丢失https协议问题"""
     fast_source_group = []
     normal_source_group = []
     with open(SOURCE_FILE, "r", encoding="utf-8") as f:
         raw_lines = [line.strip() for line in f.readlines() if line.strip() and not line.startswith("#")]
     for line in raw_lines:
-        # 区分两种分隔符，只分割第一个分隔符，防止URL内包含冒号被截断
         if "：" in line:
             sep = "："
             name_part, url_part = line.split(sep, 1)
@@ -83,7 +73,6 @@ def load_raw_source_pool() -> list[str]:
             sep = ":"
             name_part, url_part = line.split(sep, 1)
         else:
-            # 无名称，整行直接作为url
             normal_source_group.append(line.strip())
             continue
         name_part = name_part.strip()
@@ -97,7 +86,6 @@ def load_raw_source_pool() -> list[str]:
     return full_source_list
 
 def load_white_list_spec() -> tuple[list[str], set[str]]:
-    """加载白名单基准序列：有序输出模板 + 小写哈希快速检索集合（兼容大小写匹配）"""
     order_benchmark = []
     quick_match_set_lower = set()
     with open(WHITE_LIST_FILE, "r", encoding="utf-8") as f:
@@ -126,7 +114,7 @@ def fetch_source_channel_index(src_url: str, white_set_lower: set[str]) -> list[
             link = link.strip()
             ch_low = ch_name.lower()
             print(f"【调试-TXT提取频道】{ch_name}")
-            # 过滤#开头的M3U标签行
+            # 过滤#开头M3U标签行
             if ch_low in white_set_lower and not is_incompatible_stream(link) and not ch_name.startswith("#"):
                 valid_pair.append((ch_name, link))
         m3u8_reg = re.compile(r"#EXTINF:-1,([^\n]+)\n(http[s]?://[^\n]+)")
@@ -135,7 +123,6 @@ def fetch_source_channel_index(src_url: str, white_set_lower: set[str]) -> list[
             link = link.strip()
             ch_low = ch_name.lower()
             print(f"【调试-M3U8提取频道】{ch_name}")
-            # 过滤#开头的标签
             if ch_low in white_set_lower and not is_incompatible_stream(link) and not ch_name.startswith("#"):
                 valid_pair.append((ch_name, link))
     except Exception as e:
@@ -145,14 +132,11 @@ def fetch_source_channel_index(src_url: str, white_set_lower: set[str]) -> list[
 
 # ===================== 阶段2：流媒体一体化质量评测与链路择优 =====================
 def evaluate_and_filter_streams(ch_link_map: dict[str, list[str]]) -> dict[str, list[str]]:
-    """批量执行一体化评测、画质过滤、多维度排序、单链路截断"""
     final_filter_map = defaultdict(list)
     for ch_name, url_list in ch_link_map.items():
-        # 并发批量一体化评测
         eval_results = list(concurrent.futures.ThreadPoolExecutor(max_workers=STREAM_EVAL_WORKERS).map(unified_stream_evaluation, url_list))
         qualified_items = []
         for link, (delay, height) in zip(url_list, eval_results):
-            # 过滤：超时失效流 / 低于720P低清流直接舍弃
             if delay >= 9999 or height < MIN_VERTICAL_RES:
                 continue
             item_score = {
@@ -164,16 +148,13 @@ def evaluate_and_filter_streams(ch_link_map: dict[str, list[str]]) -> dict[str, 
             qualified_items.append(item_score)
         if not qualified_items:
             continue
-        # 多维度复合排序：官方源优先 → 延迟升序 → 分辨率降序
         qualified_items.sort(key=lambda x: (x["priority"], x["delay"], x["res_neg"]))
-        # 单频道截断，仅保留Top3最优链路
         top3_links = [item["url"] for item in qualified_items[:MAX_STREAM_PER_CH]]
         final_filter_map[ch_name] = top3_links
     return final_filter_map
 
 # ===================== 阶段3：标准化清单持久化输出 =====================
 def generate_output_file(white_order: list[str], filter_map: dict[str, list[str]]):
-    """严格遵循白名单基准序列生成兼容终端txt清单"""
     output_rows = []
     for ch_name in white_order:
         if ch_name not in filter_map:
@@ -186,23 +167,17 @@ def generate_output_file(white_order: list[str], filter_map: dict[str, list[str]
 
 # ===================== 主业务流水线入口 =====================
 def main():
-    # 阶段1 完整执行
     source_pool = load_raw_source_pool()
     white_order_bench, white_match_set_lower = load_white_list_spec()
     channel_link_cache = defaultdict(list)
-    # 并发拉取全部源频道索引并前置过滤
     with concurrent.futures.ThreadPoolExecutor(max_workers=SOURCE_FETCH_WORKERS) as exe:
         all_source_channel_data = exe.map(lambda s: fetch_source_channel_index(s, white_match_set_lower), source_pool)
     for ch_pair_list in all_source_channel_data:
         for ch, url in ch_pair_list:
             channel_link_cache[ch].append(url)
     print(f"【阶段1完成】预过滤后待评测频道数量：{len(channel_link_cache)}")
-
-    # 阶段2 一体化评测、排序、截断
     qualified_channel_links = evaluate_and_filter_streams(channel_link_cache)
     print(f"【阶段2完成】完成质量评测的有效频道数量：{len(qualified_channel_links)}")
-
-    # 阶段3 按白名单顺序输出标准化文件
     generate_output_file(white_order_bench, qualified_channel_links)
 
 if __name__ == "__main__":
