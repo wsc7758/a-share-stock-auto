@@ -242,13 +242,23 @@ def main():
     export_result(white_origin_list, qualified_channel_map)
     print("====== 脚本全部执行完毕 ======", flush=True)
 
-    # 优化：强制回收全部子线程，精简磁盘同步逻辑，减少IO阻塞
-    for th in threading.enumerate():
+    # 新增：阻塞等待所有子线程彻底退出，强制终止网络线程
+    import threading
+    import time
+    all_threads = threading.enumerate()
+    for th in all_threads:
         if th != threading.current_thread():
             try:
                 th._stop()
             except:
                 pass
+    # 循环等待，直到只剩主线程
+    wait_cnt = 0
+    while len(threading.enumerate()) > 1 and wait_cnt < 15:
+        time.sleep(1)
+        wait_cnt += 1
+        print(f"等待子线程销毁 {wait_cnt}/15", flush=True)
+
     # 关闭所有文件对象
     for var in locals().values():
         if hasattr(var, "close") and callable(var.close):
@@ -256,9 +266,8 @@ def main():
                 var.close()
             except Exception:
                 pass
-    # 仅单次同步+3秒短休眠，匹配yml简化逻辑
     os.sync()
-    time.sleep(3)
+    time.sleep(2)
     print("====== Python资源全部释放完成 ======", flush=True)
 
 if __name__ == "__main__":
