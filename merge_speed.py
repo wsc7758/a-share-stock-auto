@@ -194,7 +194,7 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
         final_map[ch_name] = topN
     return final_map
 
-# 输出逻辑完全不变，保留模版#区块、原始顺序
+# 【核心修复】写入时立刻flush、close、os.sync，杜绝文件锁阻塞git
 def export_result(white_origin: list[str], final_stream_map: dict[str, list[str]]):
     lines = []
     for item in white_origin:
@@ -205,8 +205,12 @@ def export_result(white_origin: list[str], final_stream_map: dict[str, list[str]
         if ch_name in final_stream_map and len(final_stream_map[ch_name]) > 0:
             for link in final_stream_map[ch_name]:
                 lines.append(f"{ch_name},{link}")
-    with open(OUTPUT_TXT, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+    # 单独文件句柄，写完强制刷新、关闭、同步磁盘
+    f = open(OUTPUT_TXT, "w", encoding="utf-8")
+    f.write("\n".join(lines))
+    f.flush()    # 清空内存缓冲区
+    f.close()    # 立刻释放文件句柄
+    os.sync()    # 强制写入物理磁盘
     stream_count = sum(1 for line in lines if "," in line)
     print(f"【阶段3-输出完成】最终有效流媒体总条数：{stream_count}")
 
@@ -238,17 +242,14 @@ def main():
     export_result(white_origin_list, qualified_channel_map)
     print("====== 脚本全部执行完毕 ======")
 
-    # 新增修复：释放文件句柄、同步磁盘、休眠缓冲，解决IO阻塞卡住git步骤
-    # 遍历局部变量关闭文件
+    # 二次兜底：释放剩余文件句柄、同步磁盘、休眠缓冲
     for var in locals().values():
         if hasattr(var, "close") and callable(var.close):
             try:
                 var.close()
             except Exception:
                 pass
-    # 强制写入磁盘缓存
     os.sync()
-    # 休眠2秒释放文件锁
     time.sleep(2)
 
 if __name__ == "__main__":
