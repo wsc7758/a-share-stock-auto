@@ -9,16 +9,16 @@ import m3u8
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# 全局最优固定参数，无需再调整
+# ===================== 全局参数（优化后，减少误删可用源） =====================
 SOURCE_FILE = "sources.txt"
 WHITE_LIST_FILE = "channel_whitelist.txt"
 OUTPUT_TXT = "tv.txt"
-STREAM_TEST_TIMEOUT = 0.8
+STREAM_TEST_TIMEOUT = 1.2
 MIN_VERTICAL_RES = 1080
-MAX_STREAM_PER_CHANNEL = 3
+MAX_STREAM_PER_CHANNEL = 6   # 单频道保留6条备用线路
 SOURCE_FETCH_TIMEOUT = 3
 SOURCE_FETCH_WORKERS = 3
-STREAM_EVAL_WORKERS = 6
+STREAM_EVAL_WORKERS = 4      # 降低并发，避免服务器限流
 DEBUG_LOG = False
 
 def is_stream_incompatible(url: str) -> bool:
@@ -37,18 +37,21 @@ def get_stream_priority(url: str) -> int:
         return 0
     return 1
 
-# 内层请求强制0.8s超时，全量异常兜底，杜绝底层无限阻塞
+# 修复：废弃HEAD请求，GET轻量探测，完整读取m3u8，放宽超时
 def stream_quality_detect(url: str) -> tuple[float, int]:
     headers = {"User-Agent": "Mozilla/5.0 AndroidTV"}
     delay = 9999.0
     max_res = 720
     start = time.time()
     try:
-        resp = requests.head(url, headers=headers, timeout=0.8, stream=True, verify=False, allow_redirects=True)
+        resp = requests.get(
+            url, headers=headers, timeout=STREAM_TEST_TIMEOUT,
+            stream=True, verify=False, allow_redirects=True
+        )
         delay = round(time.time() - start, 3)
         if resp.status_code == 200:
-            resp_get = requests.get(url, headers=headers, timeout=0.8, verify=False, stream=True)
-            m3u_obj = m3u8.loads(resp_get.text[:2000])
+            m3u_full = resp.text
+            m3u_obj = m3u8.loads(m3u_full)
             for track in m3u_obj.playlists:
                 if track.stream_info and track.stream_info.resolution:
                     w, h = track.stream_info.resolution.split("x")
@@ -97,6 +100,7 @@ def fetch_channel_from_source(src_link: str, white_lower_set: set[str]) -> list[
     try:
         resp = requests.get(src_link, headers=headers, timeout=SOURCE_FETCH_TIMEOUT, verify=False)
         text = resp.text
+        # TXT 匹配
         txt_pattern = re.compile(r"([^,]+),(https?://[^\n]+)")
         for ch_name, stream_url in txt_pattern.findall(text):
             ch_name = ch_name.strip().replace("#genre#", "")
@@ -106,8 +110,17 @@ def fetch_channel_from_source(src_link: str, white_lower_set: set[str]) -> list[
             ch_lower = ch_name.lower()
             if ch_lower in white_lower_set and not is_stream_incompatible(stream_url):
                 result_pairs.append((ch_name, stream_url))
+        # M3U8匹配
         m3u_pattern = re.compile(r"#EXTINF:-1,([^\n]+)\n(https?://[^\n]+)")
         for ch_name, stream_url in m3u_pattern.findall(text):
+            ch_name = ch_name.strip()
+            stream_url = stream_url.strip()
+            ch_lower = ch_name.lower()
+            if ch_lower in white_lower_set and not is_stream_incompatible(stream_url):
+                result_pairs.append((ch_name, stream_url))
+        # 新增FLV匹配，兼容低延迟播放源
+        flv_pattern = re.compile(r"([^,]+),(https?://[^\n]+\.flv)")
+        for ch_name, stream_url in flv_pattern.findall(text):
             ch_name = ch_name.strip()
             stream_url = stream_url.strip()
             ch_lower = ch_name.lower()
@@ -118,7 +131,7 @@ def fetch_channel_from_source(src_link: str, white_lower_set: set[str]) -> list[
             print(f"【调试】源 {src_link} 拉取异常：{str(e)}")
     return result_pairs
 
-# 无批次超时、单任务单独捕获超时，彻底解决卡死无日志
+# 无批次超时，单任务单独捕获超时，杜绝卡死无日志
 def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list[str]]:
     final_map = defaultdict(list)
     total_ch = len(channel_raw_map)
@@ -138,7 +151,7 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
             futures.append((idx, fut))
         for idx, fu in futures:
             try:
-                delay, res = fu.result(timeout=0.8)
+                delay, res = fu.result(timeout=STREAM_TEST_TIMEOUT)
                 task_result[idx] = (delay, res)
             except concurrent.futures.TimeoutError:
                 task_result[idx] = (9999, 0)
@@ -152,11 +165,13 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
     for ch_name, eval_res in ch_temp.items():
         curr += 1
         print(f"【阶段2测速进度】{curr}/{total_ch} 完成频道：{ch_name}")
-        eval_res.sort(key=lambda x: (x[1], x[2], x[3]))
-        top3 = [item[0] for item in eval_res[:MAX_STREAM_PER_CHANNEL]]
-        final_map[ch_name] = top3
+        # 排序规则：优先级 > 分辨率 > 延迟，弱化云端延迟权重
+        eval_res.sort(key=lambda x: (x[1], -x[3], x[2]))
+        topN = [item[0] for item in eval_res[:MAX_STREAM_PER_CHANNEL]]
+        final_map[ch_name] = topN
     return final_map
 
+# 输出逻辑完全不变：保留白名单注释、空行、原始顺序、分区块
 def export_result(white_origin: list[str], final_stream_map: dict[str, list[str]]):
     lines = []
     for item in white_origin:
