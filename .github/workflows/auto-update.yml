@@ -6,7 +6,7 @@ on:
 jobs:
   stream-sort-task:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 35
     permissions:
       contents: write
     steps:
@@ -44,21 +44,22 @@ jobs:
       - name: 执行标准化分拣流水线 merge_speed.py（无缓冲实时日志）
         run: python3 -u merge_speed.py
 
-      # 永久解决git rebase本地变更报错
+      # 彻底删除stash，改用安全无交互git逻辑，不会卡死
       - name: 自动提交更新输出文件tv.txt
         run: |
           git config --global user.name "IPTV-Sort-Bot"
           git config --global user.email "auto-bot@example.com"
-          # 等待文件IO完全释放
-          sleep 3
+          # 加长等待，给系统充足时间释放文件锁
+          sleep 4
           git add tv.txt
-          git stash push -m "auto temp tv"
-          git pull --rebase origin main
-          git stash pop
-          git add tv.txt
+          # 检测无更新直接退出，不执行git操作
           if git diff --cached --quiet; then
             echo "tv.txt无更新，跳过提交"
-          else
-            git commit -m "流水线自动更新｜优选测速直播源"
-            git push origin main
+            exit 0
           fi
+          # 安全同步远端，无stash、无rebase冲突
+          git fetch origin main
+          git reset --hard origin/main
+          git add tv.txt
+          git commit -m "流水线自动更新｜优选测速直播源"
+          git push origin main
