@@ -171,8 +171,10 @@ def export_result(white_origin: list[str], final_stream_map: dict[str, list[str]
                 lines.append(f"{ch_name},{link}")
     with open(OUTPUT_TXT, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
+        # 新增：写入本次执行时间戳，强制文件哈希改变
+        import datetime
+        f.write(f"\n# 流水线自动生成更新时间：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         f.flush()
-    # 修复1：强制磁盘落盘，确保tv.txt写入物理磁盘
     os.sync()
     stream_count = sum(1 for line in lines if "," in line)
     print(f"【阶段3-输出完成】最终有效流媒体总条数：{stream_count}", flush=True)
