@@ -6,14 +6,21 @@ on:
 jobs:
   stream-sort-task:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
     permissions:
       contents: write
     steps:
       - name: 拉取仓库完整代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      # 缓存Python依赖包，大幅减少安装耗时
+      - name: 缓存pip依赖包
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('**/requirements.txt') }}
 
       - name: 配置UTF-8系统编码，解决中文日志乱码
         run: |
@@ -21,8 +28,11 @@ jobs:
           echo "LANG=en_US.UTF-8" >> $GITHUB_ENV
           echo "PYTHONIOENCODING=utf-8" >> $GITHUB_ENV
 
-      - name: 配置国内公共DNS，优化国内源访问链路
-        run: echo "nameserver 223.5.5.5" | sudo tee /etc/resolv.conf
+      # 稳定配置国内阿里DNS，防止被系统重置
+      - name: 配置国内公共DNS，优化国内源访问
+        run: |
+          echo "nameserver 223.5.5.5" | sudo tee /etc/systemd/resolved.conf.d/dns.conf
+          sudo systemctl restart systemd-resolved
 
       - name: 安装Python运行依赖（清华国内镜像）
         run: |
@@ -39,11 +49,12 @@ jobs:
         run: |
           git config --global user.name "IPTV-Sort-Bot"
           git config --global user.email "auto-bot@example.com"
+          git pull --rebase origin main
           git add tv.txt
           # 检查暂存区是否存在变更
           if git diff --cached --quiet; then
             echo "tv.txt无更新，跳过提交"
           else
             git commit -m "流水线自动更新｜优选测速直播源"
-            git push
+            git push origin main
           fi
