@@ -46,9 +46,15 @@ jobs:
 
       - name: 仅执行分拣脚本
         run: |
-          PYTHONUNBUFFERED=1 timeout 900 python3 merge_speed.py
-          echo "====分拣脚本执行完毕，文件已生成===="
-          pkill -f python3 || true
+           PYTHONUNBUFFERED=1 timeout 900 python3 merge_speed.py
+           echo "====分拣Python脚本执行完成，系统强制清理所有python残留进程===="
+           # 系统强制杀死全部python进程，释放底层C线程、文件句柄
+           pkill -9 -f python3 || true
+           # 校验tv.txt是否成功写入磁盘
+           echo "当前目录tv.txt文件信息："
+           ls -lh tv.txt
+           echo "tv.txt最后5行内容（验证时间戳）："
+           tail -5 tv.txt
 
       - name: 磁盘同步+git提交（单独60秒超时，每步打印日志）
         timeout-minutes: 2
