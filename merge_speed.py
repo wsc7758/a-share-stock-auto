@@ -20,7 +20,7 @@ MAX_STREAM_PER_CHANNEL = 6
 SOURCE_FETCH_TIMEOUT = 3
 SOURCE_FETCH_WORKERS = 3
 STREAM_EVAL_WORKERS = 6
-BATCH_MAX_RUN_SEC = 60
+BATCH_MAX_RUN_SEC = 25
 batch_size = 60
 DEBUG_LOG = False
 
@@ -79,7 +79,7 @@ def load_source_list() -> list[str]:
                     source_list.append(link.strip())
                 else:
                     source_list.append(line.strip())
-    print(f"【阶段1-源池加载】待拉取直播源节点总数：{len(source_list)}")
+    print(f"【阶段1-源池加载】待拉取直播源节点总数：{len(source_list)}", flush=True)
     return source_list
 
 # 完整保留白名单注释、空行、原始顺序，用于分区块输出
@@ -93,7 +93,7 @@ def load_white_list() -> tuple[list[str], set[str]]:
             strip_line = raw_line.strip()
             if strip_line and not raw_line.startswith("#"):
                 lower_match_set.add(strip_line.lower())
-    print(f"【阶段1-白名单加载】基准频道总数量：{len(origin_order)}")
+    print(f"【阶段1-白名单加载】基准频道总数量：{len(origin_order)}", flush=True)
     return origin_order, lower_match_set
 
 # 兼容txt、m3u8、flv三种直播格式
@@ -133,7 +133,7 @@ def fetch_channel_from_source(src_link: str, white_lower_set: set[str]) -> list[
                 result_pairs.append((ch_name, stream_url))
     except Exception as e:
         if DEBUG_LOG:
-            print(f"【调试】源 {src_link} 拉取异常：{str(e)}")
+            print(f"【调试】源 {src_link} 拉取异常：{str(e)}", flush=True)
     return result_pairs
 
 # 分批测速 + 批次超时自动截断 + 取消残留线程，不会卡死循环
@@ -150,11 +150,11 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
             curr_idx += 1
     task_result = {}
     total_url = len(all_tasks)
-    print(f"【测速预加载】待测速总链接数量：{total_url}")
+    print(f"【测速预加载】待测速总链接数量：{total_url}", flush=True)
     for start in range(0, total_url, batch_size):
         batch_urls = all_tasks[start:start+batch_size]
         batch_end_idx = min(start + batch_size, total_url)
-        print(f"【测速批次】{start+1} ~ {batch_end_idx} / {total_url}，单批限时{BATCH_MAX_RUN_SEC}秒")
+        print(f"【测速批次】{start+1} ~ {batch_end_idx} / {total_url}，单批限时{BATCH_MAX_RUN_SEC}秒", flush=True)
         batch_fut_map = {}
         exe = concurrent.futures.ThreadPoolExecutor(max_workers=STREAM_EVAL_WORKERS)
         try:
@@ -173,7 +173,7 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
                     except Exception:
                         task_result[real_idx] = (9999, 0)
             except concurrent.futures.TimeoutError:
-                print(f"【警告】本批次 {start+1} ~ {batch_end_idx} 运行超过{BATCH_MAX_RUN_SEC}秒，截断，仅保留已完成链接，跳过剩余未测速URL")
+                print(f"【警告】本批次 {start+1} ~ {batch_end_idx} 运行超过{BATCH_MAX_RUN_SEC}秒，截断，仅保留已完成链接，跳过剩余未测速URL", flush=True)
                 # 取消所有未完成任务，解除线程阻塞
                 for fut in batch_fut_map:
                     if not fut.done():
@@ -189,7 +189,7 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
     curr = 0
     for ch_name, eval_res in ch_temp.items():
         curr += 1
-        print(f"【阶段2测速进度】{curr}/{total_ch} 完成频道：{ch_name}")
+        print(f"【阶段2测速进度】{curr}/{total_ch} 完成频道：{ch_name}", flush=True)
         eval_res.sort(key=lambda x: (x[1], -x[3], x[2]))
         topN = [item[0] for item in eval_res[:MAX_STREAM_PER_CHANNEL]]
         final_map[ch_name] = topN
@@ -212,10 +212,10 @@ def export_result(white_origin: list[str], final_stream_map: dict[str, list[str]
     f.close()
     os.sync()
     stream_count = sum(1 for line in lines if "," in line)
-    print(f"【阶段3-输出完成】最终有效流媒体总条数：{stream_count}")
+    print(f"【阶段3-输出完成】最终有效流媒体总条数：{stream_count}", flush=True)
 
 def main():
-    print("====== IPTV分拣脚本启动 ======")
+    print("====== IPTV分拣脚本启动 ======", flush=True)
     source_pool = load_source_list()
     white_origin_list, white_lower_set = load_white_list()
     raw_channel_cache = defaultdict(list)
@@ -229,18 +229,18 @@ def main():
                 for ch, link in pair_list:
                     raw_channel_cache[ch].append(link)
             except concurrent.futures.TimeoutError:
-                print("【警告】单个直播源拉取超时，自动跳过")
+                print("【警告】单个直播源拉取超时，自动跳过", flush=True)
             except Exception as e:
-                print(f"【警告】直播源处理异常：{str(e)}")
+                print(f"【警告】直播源处理异常：{str(e)}", flush=True)
     # 链接去重，减少重复测速
     for ch in raw_channel_cache:
         unique_urls = list(dict.fromkeys(raw_channel_cache[ch]))
         raw_channel_cache[ch] = unique_urls
-    print(f"【阶段1完成】待测速频道总数量：{len(raw_channel_cache)}")
+    print(f"【阶段1完成】待测速频道总数量：{len(raw_channel_cache)}", flush=True)
     qualified_channel_map = filter_best_streams(raw_channel_cache)
-    print(f"【阶段2完成】完成测速筛选频道数量：{len(qualified_channel_map)}")
+    print(f"【阶段2完成】完成测速筛选频道数量：{len(qualified_channel_map)}", flush=True)
     export_result(white_origin_list, qualified_channel_map)
-    print("====== 脚本全部执行完毕 ======")
+    print("====== 脚本全部执行完毕 ======", flush=True)
 
     # 优化：强制回收全部子线程，精简磁盘同步逻辑，减少IO阻塞
     for th in threading.enumerate():
@@ -259,7 +259,7 @@ def main():
     # 仅单次同步+3秒短休眠，匹配yml简化逻辑
     os.sync()
     time.sleep(3)
-    print("====== Python资源全部释放完成 ======")
+    print("====== Python资源全部释放完成 ======", flush=True)
 
 if __name__ == "__main__":
     main()
