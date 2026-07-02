@@ -2,7 +2,12 @@ name: IPTV标准化流媒体分拣流水线
 on:
   push:
     branches: [ main ]
+  # 定时任务：UTC 18点 = 北京时间次日02:00 每天自动执行
+  schedule:
+    - cron: '0 18 * * *'
+  # 支持页面手动触发
   workflow_dispatch:
+
 jobs:
   stream-sort-task:
     runs-on: ubuntu-latest
@@ -29,14 +34,12 @@ jobs:
 
       - name: 配置国内公共DNS
         run: |
-          sudo mkdir -p /etc/systemd/resolved.conf.d
-          echo "nameserver 223.5.5.5" | sudo tee /etc/systemd/resolved.conf.d/dns.conf
-          sudo systemctl restart systemd-resolved
+          echo "nameserver 223.5.5.5" | sudo tee /etc/resolv.conf
 
       - name: 安装Python运行依赖（清华镜像+官方源兜底）
         run: |
-          python3 -m pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple
-          python3 -m pip install requests m3u8 -i https://pypi.tuna.tsinghua.edu.cn/simple --extra-index-url https://pypi.org/simple
+          pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+          pip install requests m3u8 urllib3
 
       - name: 列出当前目录文件校验
         run: ls -la
@@ -45,7 +48,6 @@ jobs:
         run: |
           PYTHONUNBUFFERED=1 timeout 900 python3 merge_speed.py
           echo "====分拣脚本执行完毕，文件已生成===="
-          # 兜底杀死残留python/网络子进程
           pkill -f python3 || true
 
       - name: 磁盘同步+git提交（单独60秒超时，每步打印日志）
@@ -57,8 +59,8 @@ jobs:
           echo "2. 等待3秒释放文件锁"
           sleep 3
           echo "3. 配置git用户"
-          git config --global user.name "IPTV-Sort-Bot"
-          git config --global user.email "auto-bot@example.com"
+          git config --global user.name "wsc7758"
+          git config --global user.email "xxx@shturl."
           git add tv.txt
           echo "4. 判断文件是否变更"
           if git diff --cached --quiet; then
