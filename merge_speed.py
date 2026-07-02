@@ -47,24 +47,25 @@ def stream_quality_detect(url: str) -> tuple[float, int]:
     headers = {"User-Agent": "Mozilla/5.0 AndroidTV"}
     delay = 9999.0
     max_res = 720
-    start = time.time()  # 修复原代码未定义start的BUG
+    start = time.time()
     try:
-        # HEAD请求，只拿响应头，不下载完整m3u8，大幅减少流量&耗时
+        # 强制请求内部0.8s超时，杜绝底层无限阻塞
         resp = requests.head(
-            url, headers=headers, timeout=STREAM_TEST_TIMEOUT,
+            url, headers=headers, timeout=0.8,
             stream=True, verify=False, allow_redirects=True
         )
         delay = round(time.time() - start, 3)
-        # 仅当HEAD正常再GET极小片段解析分辨率
         if resp.status_code == 200:
-            resp_get = requests.get(url, headers=headers, timeout=0.5, verify=False, stream=True)
-            m3u_obj = m3u8.loads(resp_get.text[:2000]) # 只读取前2000字符，不用完整文件
+            # 片段读取同样限制超时
+            resp_get = requests.get(url, headers=headers, timeout=0.8, verify=False, stream=True)
+            m3u_obj = m3u8.loads(resp_get.text[:2000])
             for track in m3u_obj.playlists:
                 if track.stream_info and track.stream_info.resolution:
                     w, h = track.stream_info.resolution.split("x")
                     h = int(h)
                     if h > max_res:
                         max_res = h
+    # 捕获所有网络、解析异常，直接返回极差流
     except Exception:
         pass
     return delay, max_res
