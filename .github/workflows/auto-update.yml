@@ -50,9 +50,11 @@ jobs:
         run: |
           git config --global user.name "IPTV-Sort-Bot"
           git config --global user.email "auto-bot@example.com"
+          # 第一步：先同步远端最新代码，此时本地无暂存文件，不会报错
           git pull --rebase origin main
+          # 第二步：将本次分拣生成的tv.txt加入暂存
           git add tv.txt
-          # 检查暂存区是否存在变更
+          # 判断是否存在有效更新
           if git diff --cached --quiet; then
             echo "tv.txt无更新，跳过提交"
           else
