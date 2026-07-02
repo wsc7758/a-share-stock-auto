@@ -14,14 +14,14 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 SOURCE_FILE = "sources.txt"
 WHITE_LIST_FILE = "channel_whitelist.txt"
 OUTPUT_TXT = "tv.txt"
-STREAM_TEST_TIMEOUT = 1.0
+STREAM_TEST_TIMEOUT = 0.8
 MIN_VERTICAL_RES = 1080
 MAX_STREAM_PER_CHANNEL = 6
 SOURCE_FETCH_TIMEOUT = 3
 SOURCE_FETCH_WORKERS = 3
-STREAM_EVAL_WORKERS = 4
+STREAM_EVAL_WORKERS = 6
 BATCH_MAX_RUN_SEC = 40
-batch_size = 40
+batch_size = 60
 DEBUG_LOG = False
 
 def is_stream_incompatible(url: str) -> bool:
