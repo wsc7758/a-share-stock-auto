@@ -13,12 +13,12 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 SOURCE_FILE = "sources.txt"
 WHITE_LIST_FILE = "channel_whitelist.txt"
 OUTPUT_TXT = "tv.txt"
-STREAM_TEST_TIMEOUT = 1.2
+STREAM_TEST_TIMEOUT = 1.0
 MIN_VERTICAL_RES = 1080
 MAX_STREAM_PER_CHANNEL = 6
 SOURCE_FETCH_TIMEOUT = 3
 SOURCE_FETCH_WORKERS = 3
-STREAM_EVAL_WORKERS = 2  # 大幅降低并发，减少排队阻塞
+STREAM_EVAL_WORKERS = 4  # 大幅降低并发，减少排队阻塞
 DEBUG_LOG = False
 
 def is_stream_incompatible(url: str) -> bool:
@@ -148,7 +148,7 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
     task_result = {}
     total_url = len(all_tasks)
     print(f"【测速预加载】待测速总链接数量：{total_url}")
-    batch_size = 20
+    batch_size = 60
     # 分批次执行，避免一次性塞满线程池
     for start in range(0, total_url, batch_size):
         batch_urls = all_tasks[start:start+batch_size]
