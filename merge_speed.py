@@ -9,6 +9,7 @@ import m3u8
 import urllib3
 import threading
 import os
+import datetime
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # 全局最优固定参数，无需再调整
@@ -171,10 +172,10 @@ def export_result(white_origin: list[str], final_stream_map: dict[str, list[str]
                 lines.append(f"{ch_name},{link}")
     with open(OUTPUT_TXT, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
-        # 新增：写入本次执行时间戳，强制文件哈希改变
-        import datetime
+        # 新增：写入当前时间戳，强制文件内容每次不同，git识别变更
         f.write(f"\n# 流水线自动生成更新时间：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         f.flush()
+    # 强制磁盘落盘，确保tv.txt写入物理磁盘
     os.sync()
     stream_count = sum(1 for line in lines if "," in line)
     print(f"【阶段3-输出完成】最终有效流媒体总条数：{stream_count}", flush=True)
@@ -206,7 +207,7 @@ def main():
     export_result(white_origin_list, qualified_channel_map)
     print("====== 脚本全部执行完毕 ======", flush=True)
 
-    # 修复2：阻塞等待所有网络/IO子线程彻底销毁，直到只剩主线程
+    # 阻塞等待所有网络/IO子线程彻底销毁，直到只剩主线程
     wait_max = 15
     wait_cnt = 0
     while wait_cnt < wait_max:
@@ -216,7 +217,7 @@ def main():
         wait_cnt += 1
         print(f"等待子线程销毁 {wait_cnt}/{wait_max}", flush=True)
         time.sleep(1)
-    # 修复3：二次同步磁盘，兜底文件写入
+    # 二次同步磁盘，兜底文件写入
     os.sync()
     time.sleep(2)
     print("====== Python资源全部释放完成 ======", flush=True)
