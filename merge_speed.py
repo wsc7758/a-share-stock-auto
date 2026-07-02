@@ -1,10 +1,10 @@
 import sys
-sys.stdout.reconfigure(encoding="utf-8")
+import os
+import time
 import requests
 import concurrent.futures
 import re
 from collections import defaultdict
-import time
 import m3u8
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -18,7 +18,9 @@ MIN_VERTICAL_RES = 1080
 MAX_STREAM_PER_CHANNEL = 6
 SOURCE_FETCH_TIMEOUT = 3
 SOURCE_FETCH_WORKERS = 3
-STREAM_EVAL_WORKERS = 4  # 大幅降低并发，减少排队阻塞
+STREAM_EVAL_WORKERS = 4
+BATCH_MAX_RUN_SEC = 25
+batch_size = 40
 DEBUG_LOG = False
 
 def is_stream_incompatible(url: str) -> bool:
@@ -133,7 +135,7 @@ def fetch_channel_from_source(src_link: str, white_lower_set: set[str]) -> list[
             print(f"【调试】源 {src_link} 拉取异常：{str(e)}")
     return result_pairs
 
-# 核心修改：分批测速，打印批次日志，不会空白卡死
+# 分批测速 + 批次超时自动截断 + 取消残留线程，不会卡死循环
 def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list[str]]:
     final_map = defaultdict(list)
     total_ch = len(channel_raw_map)
@@ -148,8 +150,6 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
     task_result = {}
     total_url = len(all_tasks)
     print(f"【测速预加载】待测速总链接数量：{total_url}")
-    batch_size = 40
-    BATCH_MAX_RUN_SEC = 40
     for start in range(0, total_url, batch_size):
         batch_urls = all_tasks[start:start+batch_size]
         batch_end_idx = min(start + batch_size, total_url)
@@ -173,7 +173,7 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
                         task_result[real_idx] = (9999, 0)
             except concurrent.futures.TimeoutError:
                 print(f"【警告】本批次 {start+1} ~ {batch_end_idx} 运行超过{BATCH_MAX_RUN_SEC}秒，截断，仅保留已完成链接，跳过剩余未测速URL")
-                # 关键修复：取消所有未完成任务，线程池不再阻塞等待
+                # 取消所有未完成任务，解除线程阻塞
                 for fut in batch_fut_map:
                     if not fut.done():
                         fut.cancel()
@@ -184,6 +184,7 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
     for idx, ch_name, url in ch_url_index:
         delay, res = task_result.get(idx, (9999, 0))
         ch_temp[ch_name].append((url, get_stream_priority(url), delay, -res))
+    # 排序：咪咕/央视优先 > 分辨率优先 > 延迟靠后
     curr = 0
     for ch_name, eval_res in ch_temp.items():
         curr += 1
@@ -236,6 +237,19 @@ def main():
     print(f"【阶段2完成】完成测速筛选频道数量：{len(qualified_channel_map)}")
     export_result(white_origin_list, qualified_channel_map)
     print("====== 脚本全部执行完毕 ======")
+
+    # 新增修复：释放文件句柄、同步磁盘、休眠缓冲，解决IO阻塞卡住git步骤
+    # 遍历局部变量关闭文件
+    for var in locals().values():
+        if hasattr(var, "close") and callable(var.close):
+            try:
+                var.close()
+            except Exception:
+                pass
+    # 强制写入磁盘缓存
+    os.sync()
+    # 休眠2秒释放文件锁
+    time.sleep(2)
 
 if __name__ == "__main__":
     main()
