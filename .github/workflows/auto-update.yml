@@ -45,7 +45,6 @@ jobs:
         run: |
           set -eo pipefail
           echo "===== 1. 启动分拣脚本 ====="
-          # PYTHONUNBUFFERED=1 全局强制无缓冲输出，彻底清空管道缓存
           PYTHONUNBUFFERED=1 timeout 900 python3 merge_speed.py
           echo "分拣脚本执行完毕，进入文件同步"
 
@@ -57,15 +56,16 @@ jobs:
           git config --global user.name "IPTV-Sort-Bot"
           git config --global user.email "auto-bot@example.com"
           git add tv.txt
+          # 先判断是否存在变更
           if git diff --cached --quiet; then
-            echo "tv.txt无更新，跳过提交，流程结束"
+            echo "tv.txt无更新，跳过提交，流程正常结束"
             exit 0
           fi
           echo "检测到tv.txt更新，拉取远端代码"
           git fetch origin main
           git reset --hard origin/main
           git add tv.txt
-          git commit -m "流水线自动更新｜优选测速直播源"
+          git commit -m "流水线自动更新｜优选流媒体列表" || true
           echo "推送更新至仓库"
           git push origin main
           echo "===== 全部流程执行完成 ====="
