@@ -10,7 +10,7 @@ import urllib3
 import threading
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ===================== 全局优化参数 =====================
+# ===================== 全局优化提速参数 =====================
 SOURCE_FILE = "sources.txt"
 WHITE_LIST_FILE = "channel_whitelist.txt"
 OUTPUT_TXT = "tv.txt"
@@ -20,7 +20,7 @@ MAX_STREAM_PER_CHANNEL = 6
 SOURCE_FETCH_TIMEOUT = 3
 SOURCE_FETCH_WORKERS = 3
 STREAM_EVAL_WORKERS = 6
-BATCH_MAX_RUN_SEC = 40
+BATCH_MAX_RUN_SEC = 60
 batch_size = 60
 DEBUG_LOG = False
 
@@ -242,24 +242,23 @@ def main():
     export_result(white_origin_list, qualified_channel_map)
     print("====== 脚本全部执行完毕 ======")
 
-    # 新增：强制回收所有子线程，彻底释放IO占用
+    # 优化：强制回收全部子线程，精简磁盘同步逻辑，减少IO阻塞
     for th in threading.enumerate():
         if th != threading.current_thread():
             try:
                 th._stop()
             except:
                 pass
-    # 多层同步+超长休眠兜底
+    # 关闭所有文件对象
     for var in locals().values():
         if hasattr(var, "close") and callable(var.close):
             try:
                 var.close()
             except Exception:
                 pass
+    # 仅单次同步+3秒短休眠，匹配yml简化逻辑
     os.sync()
     time.sleep(3)
-    os.sync()
-    time.sleep(5)
     print("====== Python资源全部释放完成 ======")
 
 if __name__ == "__main__":
