@@ -41,11 +41,12 @@ jobs:
       - name: 列出当前目录文件校验
         run: ls -la
 
-      # 拆分两段：python单独timeout；磁盘+git独立timeout，全程高频输出日志
       - name: 仅执行分拣脚本
         run: |
           PYTHONUNBUFFERED=1 timeout 900 python3 merge_speed.py
           echo "====分拣脚本执行完毕，文件已生成===="
+          # 兜底杀死残留python/网络子进程
+          pkill -f python3 || true
 
       - name: 磁盘同步+git提交（单独60秒超时，每步打印日志）
         timeout-minutes: 2
