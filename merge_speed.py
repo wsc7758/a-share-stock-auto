@@ -148,7 +148,7 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
     task_result = {}
     total_url = len(all_tasks)
     print(f"【测速预加载】待测速总链接数量：{total_url}")
-    batch_size = 60
+    batch_size = 40
     # 分批次执行，避免一次性塞满线程池
     for start in range(0, total_url, batch_size):
         batch_urls = all_tasks[start:start+batch_size]
