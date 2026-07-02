@@ -11,20 +11,21 @@ import urllib3
 # 全局关闭SSL不安全警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ===================== 全局业务配置（调低并发，缩短超时，关闭调试打印） =====================
+# ===================== 全局业务配置【提速参数调整】 =====================
 SOURCE_FILE = "sources.txt"
 WHITE_LIST_FILE = "channel_whitelist.txt"
 OUTPUT_TXT = "tv.txt"
-STREAM_TEST_TIMEOUT = 2.0
+# 缩短单链接测速超时，快速放弃死链
+STREAM_TEST_TIMEOUT = 1.2
 MIN_VERTICAL_RES = 1080
 MAX_STREAM_PER_CHANNEL = 3
-SOURCE_FETCH_TIMEOUT = 4
-# 降低并发，防止网络拥塞卡死
+SOURCE_FETCH_TIMEOUT = 3
+# 拉源线程不变，测速线程适度提升（容器多核利用）
 SOURCE_FETCH_WORKERS = 3
-STREAM_EVAL_WORKERS = 6
+STREAM_EVAL_WORKERS = 10
 DEBUG_LOG = False
 
-# ===================== 底层工具函数 =====================
+# ===================== 底层工具函数【核心提速修复】 =====================
 def is_stream_incompatible(url: str) -> bool:
     ban_list = {"127.", "192.168.", "10.", "172.", "localhost", "rtmp://", "igmp://"}
     lower_url = url.lower()
@@ -41,25 +42,34 @@ def get_stream_priority(url: str) -> int:
         return 0
     return 1
 
+# 修复原代码缺失start变量 + 只请求头部不下载完整文件，减少IO耗时
 def stream_quality_detect(url: str) -> tuple[float, int]:
     headers = {"User-Agent": "Mozilla/5.0 AndroidTV"}
     delay = 9999.0
     max_res = 720
+    start = time.time()  # 修复原代码未定义start的BUG
     try:
-        resp = requests.get(url, headers=headers, timeout=STREAM_TEST_TIMEOUT, stream=True, verify=False)
+        # HEAD请求，只拿响应头，不下载完整m3u8，大幅减少流量&耗时
+        resp = requests.head(
+            url, headers=headers, timeout=STREAM_TEST_TIMEOUT,
+            stream=True, verify=False, allow_redirects=True
+        )
         delay = round(time.time() - start, 3)
-        m3u_obj = m3u8.loads(resp.text)
-        for track in m3u_obj.playlists:
-            if track.stream_info and track.stream_info.resolution:
-                w, h = track.stream_info.resolution.split("x")
-                h = int(h)
-                if h > max_res:
-                    max_res = h
+        # 仅当HEAD正常再GET极小片段解析分辨率
+        if resp.status_code == 200:
+            resp_get = requests.get(url, headers=headers, timeout=0.5, verify=False, stream=True)
+            m3u_obj = m3u8.loads(resp_get.text[:2000]) # 只读取前2000字符，不用完整文件
+            for track in m3u_obj.playlists:
+                if track.stream_info and track.stream_info.resolution:
+                    w, h = track.stream_info.resolution.split("x")
+                    h = int(h)
+                    if h > max_res:
+                        max_res = h
     except Exception:
         pass
     return delay, max_res
 
-# ===================== 阶段1：加载源、白名单（仅大小写兼容，移除复杂清洗规避KeyError） =====================
+# ===================== 阶段1：加载源、白名单（完全保留分类注释输出逻辑，无修改） =====================
 def load_source_list() -> list[str]:
     source_list = []
     with open(SOURCE_FILE, "r", encoding="utf-8") as f:
@@ -83,7 +93,7 @@ def load_white_list() -> tuple[list[str], set[str]]:
     with open(WHITE_LIST_FILE, "r", encoding="utf-8") as f:
         for line in f.readlines():
             raw_line = line.rstrip("\n")
-            # 全部原始行（注释、空行、频道名）存入origin_order，用于输出排版
+            # 全部原始行（注释、空行、频道名）存入origin_order，用于输出区块分割
             origin_order.append(raw_line)
             strip_line = raw_line.strip()
             # 仅纯频道加入匹配集合，注释/空行跳过匹配
@@ -133,28 +143,46 @@ def fetch_channel_from_source(src_link: str, white_lower_set: set[str]) -> list[
         print(f"【调试】该源匹配有效频道数：{len(result_pairs)}")
     return result_pairs
 
-# ===================== 阶段2：并发测速、筛选最优流 =====================
+# ===================== 阶段2：【重大提速重构】全局并发测速，取消频道串行阻塞 =====================
 def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list[str]]:
     final_map = defaultdict(list)
     total_ch = len(channel_raw_map)
-    curr = 0
+    # 1. 扁平化所有(频道,链接)对，全局一次性并发，不再一个频道测完再下一个
+    all_tasks = []
+    ch_url_index = []
+    curr_idx = 0
     for ch_name, url_list in channel_raw_map.items():
+        for url in url_list:
+            all_tasks.append(url)
+            ch_url_index.append((curr_idx, ch_name, url))
+            curr_idx += 1
+
+    # 2. 全部链接统一并发测速，最大化利用线程池
+    task_result = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=STREAM_EVAL_WORKERS) as exe:
+        futures_map = {exe.submit(stream_quality_detect, url): idx for idx, url in enumerate(all_tasks)}
+        for fu in concurrent.futures.as_completed(futures_map):
+            idx = futures_map[fu]
+            delay, res = fu.result()
+            task_result[idx] = (delay, res)
+
+    # 3. 按频道分组、排序、截取TOP3（原有优先级/延迟/分辨率逻辑完全保留）
+    ch_temp = defaultdict(list)
+    for idx, ch_name, url in ch_url_index:
+        delay, res = task_result.get(idx, (9999, 0))
+        ch_temp[ch_name].append((url, get_stream_priority(url), delay, -res))
+
+    # 排序规则不变：优先级>延迟>分辨率
+    curr = 0
+    for ch_name, eval_res in ch_temp.items():
         curr += 1
-        print(f"【阶段2测速进度】{curr}/{total_ch} 正在测速频道：{ch_name}")
-        task_list = url_list
-        eval_res = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=STREAM_EVAL_WORKERS) as exe:
-            futures = [exe.submit(stream_quality_detect, u) for u in task_list]
-            for idx, fu in enumerate(futures):
-                delay, res = fu.result()
-                eval_res.append((url_list[idx], get_stream_priority(url_list[idx]), delay, -res))
-        # 优先级优先，延迟升序，分辨率降序
+        print(f"【阶段2测速进度】{curr}/{total_ch} 完成频道：{ch_name}")
         eval_res.sort(key=lambda x: (x[1], x[2], x[3]))
         top3 = [item[0] for item in eval_res[:MAX_STREAM_PER_CHANNEL]]
         final_map[ch_name] = top3
     return final_map
 
-# ===================== 阶段3：输出标准化文件 =====================
+# ===================== 阶段3：输出标准化文件【完全无修改，保留分类区块】 =====================
 def export_result(white_origin: list[str], final_stream_map: dict[str, list[str]]):
     lines = []
     for item in white_origin:
@@ -172,7 +200,7 @@ def export_result(white_origin: list[str], final_stream_map: dict[str, list[str]
     stream_count = sum(1 for line in lines if "," in line)
     print(f"【阶段3-输出完成】最终有效流媒体总条数：{stream_count}")
 
-# ===================== 主入口（补齐并发timeout、异常捕获，无语法错误） =====================
+# ===================== 主入口【新增链接去重，减少重复测速】 =====================
 def main():
     # 启动第一行立刻打印，确认脚本已运行
     print("====== IPTV分拣脚本启动 ======")
@@ -192,6 +220,12 @@ def main():
                 print("【警告】单个直播源拉取超时，自动跳过")
             except Exception as e:
                 print(f"【警告】直播源处理异常：{str(e)}")
+
+    # 【提速优化：链接去重，同一个URL只测速一次】
+    for ch in raw_channel_cache:
+        unique_urls = list(dict.fromkeys(raw_channel_cache[ch]))
+        raw_channel_cache[ch] = unique_urls
+
     print(f"【阶段1完成】待测速频道总数量：{len(raw_channel_cache)}")
     qualified_channel_map = filter_best_streams(raw_channel_cache)
     print(f"【阶段2完成】完成测速筛选频道数量：{len(qualified_channel_map)}")
