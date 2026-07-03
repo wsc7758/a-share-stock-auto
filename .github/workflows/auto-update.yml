@@ -1,5 +1,4 @@
 name: stream-sort-task
-
 # 仅手动触发 + 每日凌晨2点定时，提交文件不自动运行
 on:
   workflow_dispatch:
@@ -9,13 +8,14 @@ on:
 jobs:
   stream-sort-task:
     runs-on: ubuntu-latest
+    # 授予Actions bot读写仓库权限，解决git push 403报错
     permissions:
-      contents: write  # 关键：给actions bot仓库读写推送权限，解决403
+      contents: write
     steps:
       - name: 检出仓库代码
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 拉取完整历史，避免推送冲突
+          fetch-depth: 0  # 拉取完整git历史，减少分支冲突
 
       - name: 安装Python运行依赖（清华镜像+官方源兜底）
         run: |
@@ -46,6 +46,7 @@ jobs:
           echo "3. 将tv.txt加入暂存区"
           git add tv.txt
           echo "4. 判断文件是否存在变更"
+          # 捕获diff退出码，无变更直接正常退出0，不触发set -eo pipefail失败
           if git diff --cached --quiet; then
             echo "无更新，直接结束流程，跳过推送"
             exit 0
