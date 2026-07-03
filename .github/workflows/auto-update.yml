@@ -21,31 +21,18 @@ jobs:
           pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
           pip install requests m3u8
 
-      # 测速+生成文件+提交推送 单步执行（新增后台异步杀进程，不阻塞主线程）
+      # 单步执行：移除全部pkill强杀逻辑，避免权限不足误杀Python
       - name: 测速+生成文件+提交推送 单步执行
         timeout-minutes: 12
         run: |
           set -eo pipefail
-          # 后台启动异步清理任务，Python运行同时并行查杀残留进程
-          (
-            sleep 30
-            pkill -9 -f python3 || true
-            pkill -9 -f curl || true
-            sync
-          ) &
-          CLEAN_PID=$!
-
-          # 执行分拣脚本，不改动py文件任何代码
+          # 仅执行Python测速，不启动任何后台杀进程脚本
           PYTHONUNBUFFERED=1 python3 merge_speed.py
+          # 延长等待时间，纯靠系统自动回收TCP连接，不强制杀进程
           sync
-          sleep 0.5
+          sleep 8
 
-          # 等待后台清理进程结束，确保socket全部释放
-          wait $CLEAN_PID
-          sync
-          sleep 0.3
-
-          # 下面全部git逻辑，串行执行
+          # 完整git推送逻辑不变
           git config --global user.name "wsc7758"
           git config --global user.email "xxx@shturl."
           git add tv.txt
