@@ -30,7 +30,7 @@ jobs:
           PYTHONUNBUFFERED=1 python3 merge_speed.py
           # 强制同步磁盘文件
           sync
-          # 主动查杀所有残留python后台子进程，消除Runner等待
+          # 主动查杀所有残留python/网络后台子进程，消除Runner等待卡顿
           pkill -f python3 || true
           pkill -f curl || true
           pkill -f wget || true
@@ -39,22 +39,30 @@ jobs:
           ls -lh tv.txt
           tail -5 tv.txt
 
-      - name: 磁盘同步+git提交（独立60秒超时）
+      - name: 磁盘同步+git提交（独立60秒超时，修复无文件变更exit code 1报错）
         timeout-minutes: 1
         run: |
           set -eo pipefail
+          echo "1. 磁盘同步锁定文件"
           sync
           sleep 0.3
+          echo "2. 配置Git提交用户"
           git config --global user.name "wsc7758"
           git config --global user.email "xxx@shturl."
+          echo "3. 将tv.txt加入暂存区"
           git add tv.txt
-          if git diff --cached --quiet; then
+          echo "4. 判断文件是否存在变更"
+          # 屏蔽输出，仅在if内捕获返回码，不会触发set -e失败
+          if git diff --cached --quiet >/dev/null 2>&1; then
             echo "tv.txt无更新，直接退出，跳过推送"
             exit 0
           fi
+          echo "5. 拉取远端最新代码防止冲突"
           git fetch origin main
           git reset --hard origin/main
           git add tv.txt
+          echo "6. 提交新版本tv.txt"
           git commit -m "流水线自动更新｜优选流媒体列表"
+          echo "7. 推送tv.txt至远端仓库（限时60秒）"
           git push origin main
           echo "====tv.txt推送仓库成功===="
