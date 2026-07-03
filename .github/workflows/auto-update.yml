@@ -21,21 +21,19 @@ jobs:
           pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
           pip install requests m3u8
 
-      # 第一步：运行Python + 循环等待python进程完全消失
       - name: 执行分拣测速脚本，生成tv.txt
         timeout-minutes: 10
         run: |
           PYTHONUNBUFFERED=1 python3 merge_speed.py
           sync
-          echo "Python打印收尾日志完毕，等待python进程彻底退出"
+          echo "Python业务执行完毕，等待所有python进程彻底销毁"
           while pgrep -f "python3 merge_speed.py" >/dev/null; do
             sleep 1
-            echo "仍有python后台线程残留，继续等待..."
+            echo "检测到残留python进程，继续等待回收..."
           done
           sync
-          echo "所有python进程已销毁，本步骤执行完毕"
+          echo "所有Python进程完全退出，本步骤结束"
 
-      # 第二步：全新环境直接推送，不会再卡住
       - name: 提交推送tv.txt文件
         timeout-minutes: 3
         run: |
