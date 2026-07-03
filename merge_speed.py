@@ -17,14 +17,14 @@ def no_reuse_conn(self, timeout=None):
     return self._new_conn()
 urllib3.connectionpool.ConnectionPool._get_conn = no_reuse_conn
 
-# 全局参数（你新增的1080分辨率、25s批次限时全部保留）
+# 全局参数（你的业务需求全部保留）
 SOURCE_FILE = "sources.txt"
 WHITE_LIST_FILE = "channel_whitelist.txt"
 OUTPUT_TXT = "tv.txt"
 STREAM_REQ_TIMEOUT = 1
 TASK_GLOBAL_TIMEOUT = 12
-BATCH_GLOBAL_TIMEOUT = 25  # 你要求的单批次最大25秒，保留
-MIN_VERTICAL_RES = 1080    # 你新增的1080P分辨率过滤，保留
+BATCH_GLOBAL_TIMEOUT = 25
+MIN_VERTICAL_RES = 1080
 MAX_STREAM_PER_CHANNEL = 3
 SOURCE_FETCH_TIMEOUT = 3
 SOURCE_FETCH_WORKERS = 3
@@ -161,9 +161,10 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
             futures = [exe.submit(batch_subtask, g) for g in sub_task_groups if g]
             complete_futures = set()
             while len(complete_futures) < len(futures):
-                # 单批次25秒超时，保留你的需求
                 if time.time() - batch_start_time >= BATCH_GLOBAL_TIMEOUT:
                     print(f"【批次超时】本批运行已满25秒，终止剩余未完成测速，已测数据全部保留", flush=True)
+                    # 新增：批次超时立刻清空连接池，防止连接堆积阻塞
+                    urllib3.PoolManager().clear()
                     break
                 try:
                     for fu in concurrent.futures.as_completed(futures, timeout=0.3):
@@ -176,9 +177,11 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
                 except concurrent.futures.TimeoutError:
                     continue
         finally:
-            # 核心修复：wait=True 等待所有测速线程关闭、释放socket，杜绝孤儿线程
             exe.shutdown(wait=True, cancel_futures=False)
+            # 双重清空连接池兜底
             urllib3.PoolManager().clear()
+            pool_tmp = urllib3.PoolManager()
+            pool_tmp.clear()
             print(f"【批次完成】{start+1}~{batch_end_idx} 批次资源回收完毕", flush=True)
 
     ch_temp = defaultdict(list)
@@ -190,7 +193,7 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
         curr += 1
         print(f"【阶段2测速进度】{curr}/{total_ch} 完成频道：{ch_name}", flush=True)
         eval_res.sort(key=lambda x: (x[1], x[2], x[3]))
-        # 过滤低于1080P的流，你的需求完整保留
+        # 1080P分辨率过滤保留
         qualified = [item for item in eval_res if -item[3] >= MIN_VERTICAL_RES]
         final_map[ch_name] = [item[0] for item in qualified[:MAX_STREAM_PER_CHANNEL]]
     return final_map
@@ -249,7 +252,7 @@ def main():
             t.join(timeout=1)
     time.sleep(1)
     print("====== Python资源全部释放完成 ======", flush=True)
-    # 主动干净退出，无后台线程挂载
+    # 主动干净退出程序
     sys.exit(0)
 
 if __name__ == "__main__":
