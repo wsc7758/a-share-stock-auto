@@ -1,6 +1,6 @@
 name: stream-sort-task
 
-# 触发规则：仅手动点击执行 + 每日凌晨2点定时，代码提交/文件修改不会自动运行
+# 仅手动触发 + 每日凌晨2点定时，提交文件不自动运行
 on:
   workflow_dispatch:
   schedule:
@@ -9,9 +9,13 @@ on:
 jobs:
   stream-sort-task:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # 关键：给actions bot仓库读写推送权限，解决403
     steps:
       - name: 检出仓库代码
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 拉取完整历史，避免推送冲突
 
       - name: 安装Python运行依赖（清华镜像+官方源兜底）
         run: |
@@ -43,7 +47,7 @@ jobs:
           git add tv.txt
           echo "4. 判断文件是否存在变更"
           if git diff --cached --quiet; then
-            echo "无更新，直接结束流程"
+            echo "无更新，直接结束流程，跳过推送"
             exit 0
           fi
           echo "5. 拉取远端最新代码防止冲突"
@@ -51,7 +55,7 @@ jobs:
           git reset --hard origin/main
           git add tv.txt
           echo "6. 提交新版本tv.txt"
-          git commit -m "流水线自动更新｜优选流媒体列表" || true
+          git commit -m "流水线自动更新｜优选流媒体列表"
           echo "7. 推送tv.txt至远端仓库（限时60秒）"
           git push origin main
           echo "====tv.txt已成功上传至仓库===="
