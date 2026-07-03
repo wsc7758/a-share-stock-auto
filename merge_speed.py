@@ -93,20 +93,28 @@ def load_source_list() -> list[str]:
     print(f"【阶段1-源池加载】待拉取直播源节点总数：{len(source_list)}", flush=True)
     return source_list
 
-def load_white_list() -> tuple[list[str], set[str]]:
-    origin_order = []
-    lower_match_set = set()
+# 白名单读取：识别 xxx,#genre# 分类标记
+def load_white_list() -> tuple[list, dict]:
+    group_info = []
+    channel_to_group = dict()
+    current_group = ""
     with open(WHITE_LIST_FILE, "r", encoding="utf-8") as f:
         for line in f.readlines():
-            raw_line = line.rstrip("\n")
-            origin_order.append(raw_line)
-            strip_line = raw_line.strip()
-            if strip_line and not raw_line.startswith("#"):
-                lower_match_set.add(strip_line.lower())
-    print(f"【阶段1-白名单加载】基准频道总数量：{len(origin_order)}", flush=True)
-    return origin_order, lower_match_set
+            raw_line = line.rstrip("\n").strip()
+            if not raw_line:
+                continue
+            # 匹配模板分类标记
+            if raw_line.endswith(",#genre#"):
+                current_group = raw_line.replace(",#genre#", "")
+                group_info.append((current_group, []))
+                continue
+            if current_group:
+                group_info[-1][1].append(raw_line)
+                channel_to_group[raw_line] = current_group
+    print(f"【阶段1-白名单加载】共读取分类数量：{len(group_info)}", flush=True)
+    return group_info, channel_to_group
 
-def fetch_channel_from_source(src_link: str, white_lower_set: set[str]) -> list[tuple[str, str]]:
+def fetch_channel_from_source(src_link: str, white_channel_set: set[str]) -> list[tuple[str, str]]:
     headers = {"User-Agent": "Mozilla/5.0 Chrome/120.0.0.0 Safari/537.36", "Connection": "close"}
     result_pairs = []
     if src_link.startswith("//"):
@@ -121,14 +129,14 @@ def fetch_channel_from_source(src_link: str, white_lower_set: set[str]) -> list[
             if ch_name.startswith("#"):
                 continue
             ch_lower = ch_name.lower()
-            if ch_lower in white_lower_set and not is_stream_incompatible(stream_url):
+            if ch_lower in white_channel_set and not is_stream_incompatible(stream_url):
                 result_pairs.append((ch_name, stream_url))
         m3u_pattern = re.compile(r"#EXTINF:-1,([^\n]+)\n(https?://[^\n]+)")
         for ch_name, stream_url in m3u_pattern.findall(text):
             ch_name = ch_name.strip()
             stream_url = stream_url.strip()
             ch_lower = ch_name.lower()
-            if ch_lower in white_lower_set and not is_stream_incompatible(stream_url):
+            if ch_lower in white_channel_set and not is_stream_incompatible(stream_url):
                 result_pairs.append((ch_name, stream_url))
     except Exception as e:
         if DEBUG_LOG:
@@ -193,21 +201,23 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
         print(f"【阶段2测速进度】{curr}/{total_ch} 完成频道：{ch_name}", flush=True)
         eval_res.sort(key=lambda x: (x[1], x[2], x[3]))
         qualified = [item for item in eval_res if -item[3] >= MIN_VERTICAL_RES]
-        # 打印该频道过滤后合格链接总数，用于排查
         print(f"【频道统计】{ch_name} 达标链接总数：{len(qualified)}，单频道最大留存：{MAX_STREAM_PER_CHANNEL}", flush=True)
-        # 双重兜底：变量+硬编码6，防止变量读取失效
-        final_map[ch_name] = [item[0] for item in qualified[:MAX_STREAM_PER_CHANNEL][:6]]
+        # 单层切片，最多6条流
+        final_map[ch_name] = [item[0] for item in qualified[:MAX_STREAM_PER_CHANNEL]]
     return final_map
 
-def export_result(white_origin: list[str], final_stream_map: dict[str, list[str]]):
+# 输出函数：分类头格式统一为 分类名,#genre#，和你的模板完全匹配
+def export_result(group_info: list, final_stream_map: dict[str, list[str]]):
     lines = []
-    for item in white_origin:
-        if item.startswith("#") or item.strip() == "":
-            lines.append(item)
-            continue
-        ch_name = item.strip()
-        if ch_name in final_stream_map and len(final_stream_map[ch_name]) > 0:
-            lines.extend([f"{ch_name},{link}" for link in final_stream_map[ch_name]])
+    for group_name, ch_list in group_info:
+        # 关键修改：输出 #genre# 格式分类标题
+        lines.append(f"{group_name},#genre#")
+        for ch_name in ch_list:
+            stream_list = final_stream_map.get(ch_name, [])
+            for link in stream_list:
+                lines.append(f"{ch_name},{link}")
+        # 分类之间空行分隔
+        lines.append("")
     with open(OUTPUT_TXT, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
         f.flush()
@@ -218,10 +228,11 @@ def export_result(white_origin: list[str], final_stream_map: dict[str, list[str]
 def main():
     print("====== IPTV分拣脚本启动 ======", flush=True)
     source_pool = load_source_list()
-    white_origin_list, white_lower_set = load_white_list()
+    group_info, channel_to_group = load_white_list()
+    white_channel_set = set(channel_to_group.keys())
     raw_channel_cache = defaultdict(list)
     with concurrent.futures.ThreadPoolExecutor(max_workers=SOURCE_FETCH_WORKERS) as exe:
-        futures = [exe.submit(fetch_channel_from_source, s, white_lower_set) for s in source_pool]
+        futures = [exe.submit(fetch_channel_from_source, s, white_channel_set) for s in source_pool]
         for fu in futures:
             try:
                 pair_list = fu.result(timeout=SOURCE_FETCH_TIMEOUT + 2)
@@ -231,13 +242,15 @@ def main():
                 print("【警告】单个直播源拉取超时，自动跳过", flush=True)
             except Exception as e:
                 print(f"【警告】直播源处理异常：{str(e)}", flush=True)
+    # 频道链接去重
     for ch in raw_channel_cache:
         raw_channel_cache[ch] = list(dict.fromkeys(raw_channel_cache[ch]))
     print(f"【阶段1完成】待测速频道总数量：{len(raw_channel_cache)}", flush=True)
     qualified_channel_map = filter_best_streams(raw_channel_cache)
     print(f"【阶段2完成】完成测速筛选频道数量：{len(qualified_channel_map)}", flush=True)
-    export_result(white_origin_list, qualified_channel_map)
+    export_result(group_info, qualified_channel_map)
 
+    # 完整收尾资源释放逻辑不变
     urllib3.PoolManager().clear()
     os.sync()
     time.sleep(0.5)
