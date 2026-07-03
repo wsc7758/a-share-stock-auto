@@ -16,12 +16,12 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 SOURCE_FILE = "sources.txt"
 WHITE_LIST_FILE = "channel_whitelist.txt"
 OUTPUT_TXT = "tv.txt"
-STREAM_TEST_TIMEOUT = 3  # 单条链接测速3秒超时，放弃当前链接
+STREAM_TEST_TIMEOUT = 3  # 单链接3秒超时，放弃当前链接
 MIN_VERTICAL_RES = 1080
 MAX_STREAM_PER_CHANNEL = 3
 SOURCE_FETCH_TIMEOUT = 3
 SOURCE_FETCH_WORKERS = 3
-STREAM_EVAL_WORKERS = 6
+STREAM_EVAL_WORKERS = 12  # 提升并发线程，缩短测速总耗时，避免15分钟超时
 batch_size = 60  # 每批60条链接，无批次总时长限制
 DEBUG_LOG = False
 
