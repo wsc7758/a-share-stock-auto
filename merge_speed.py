@@ -136,7 +136,6 @@ def fetch_channel_from_source(src_link: str, white_lower_set: set[str]) -> list[
 def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list[str]]:
     final_map = defaultdict(list)
     total_ch = len(channel_raw_map)
-    all_tasks = []
     ch_url_index = []
     curr_idx = 0
     for ch_name, url_list in channel_raw_map.items():
@@ -144,7 +143,7 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
             ch_url_index.append((curr_idx, ch_name, url))
             curr_idx += 1
     task_result = {}
-    total_url = len(all_tasks)
+    total_url = len(ch_url_index)
     print(f"【测速预加载】待测速总链接数量：{total_url}", flush=True)
 
     for start in range(0, total_url, batch_size):
