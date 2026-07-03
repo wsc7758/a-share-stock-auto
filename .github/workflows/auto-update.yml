@@ -10,6 +10,13 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: 系统内核调优，强制快速回收TCP连接（前置执行，根治残留socket）
+        run: |
+          sudo sysctl -w net.ipv4.tcp_fin_timeout=10
+          sudo sysctl -w net.ipv4.tcp_tw_reuse=1
+          sudo sysctl -w net.ipv4.tcp_tw_recycle=1
+          sudo sysctl -w net.ipv4.tcp_orphan_retries=1
+
       - name: 检出仓库代码
         uses: actions/checkout@v4
         with:
@@ -21,29 +28,21 @@ jobs:
           pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
           pip install requests m3u8
 
-      - name: 测速生成tv.txt并直接提交推送（合并单步，消除步骤切换卡顿）
-        timeout-minutes: 5
+      # 合并单步，内核参数限制socket最多10秒回收，不会长期阻塞bash
+      - name: 测速+提交推送
+        timeout-minutes: 4
         run: |
           set -eo pipefail
-          # 1. 执行分拣测速脚本（完全不改动merge_speed.py）
           PYTHONUNBUFFERED=1 python3 merge_speed.py
           sync
-          echo "测速完成，tv.txt已生成"
-          ls -lh tv.txt
-
-          # 2. 强制销毁所有残留网络/进程，防止阻塞git逻辑
           pkill -9 -f python3 || true
-          pkill -9 -f curl || true
-          pkill -9 -f wget || true
           sync
-          sleep 0.5
-
-          # 3. Git配置、判断变更、提交推送，全部在同一步完成
+          sleep 0.2
           git config --global user.name "wsc7758"
           git config --global user.email "xxx@shturl."
           git add tv.txt
           if git diff --cached --quiet >/dev/null 2>&1; then
-            echo "tv.txt无更新，任务正常结束"
+            echo "无更新"
             exit 0
           fi
           git fetch origin main
@@ -51,4 +50,3 @@ jobs:
           git add tv.txt
           git commit -m "流水线自动更新｜优选流媒体列表"
           git push origin main
-          echo "====tv.txt已推送至仓库，任务全部完成===="
