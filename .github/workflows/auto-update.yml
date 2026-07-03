@@ -21,45 +21,18 @@ jobs:
           pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
           pip install requests m3u8
 
-      # 测速步骤：原有独立子shell+exec逻辑完全不动，仅在子shell结束后增加强制杀残留进程
-      - name: 测速生成临时文件（独立子shell+exec强制释放所有句柄）
-        timeout-minutes: 10
-        run: |
-          # 新开()子shell，所有Python产生的进程、socket全部归属于这个子shell
-          (
-            PYTHONUNBUFFERED=1 python3 merge_speed.py
-            cp tv.txt /tmp/tmp_tv_m3u.txt
-            sync
-            sleep 1
-            echo "测速完成，临时文件已写入/tmp"
-            # 子shell内部exec替换进程，子shell直接退出，销毁全部后台socket
-            exec true
-          )
-          # 新增：强制杀死所有残留网络、python后台进程，彻底释放句柄
-          pkill -9 -f python3 || true
-          pkill -9 -f curl || true
-          pkill -9 -f wget || true
-          pkill -9 -f socket || true
-          sync
-          sleep 0.3
-          # 子shell结束，主bash无任何遗留网络进程，步骤立刻完成
-          echo "测速子shell已完全退出，无残留IO"
-
-      # 读取临时文件并提交推送（带文件存在容错，防止/tmp文件丢失报错）
-      - name: 读取临时文件并提交推送
-        timeout-minutes: 1
+      # 测速+文件处理+git推送全部合并单一步骤，无步骤切换阻塞
+      - name: 测速并直接提交推送（单步无跨步骤socket等待）
+        timeout-minutes: 12
         run: |
           set -eo pipefail
+          # 1. 执行分拣测速脚本
+          PYTHONUNBUFFERED=1 python3 merge_speed.py
           sync
-          # 容错逻辑：临时文件存在则复制，不存在直接复用本地tv.txt
-          if [ -f "/tmp/tmp_tv_m3u.txt" ]; then
-            cp /tmp/tmp_tv_m3u.txt tv.txt
-            echo "成功从临时目录加载tv.txt"
-          else
-            echo "警告：/tmp临时文件已被系统清理，直接使用本地生成的tv.txt"
-          fi
-          sync
-          sleep 0.3
+          sleep 0.5
+          echo "测速完成，tv.txt已生成"
+
+          # 2. git全套操作，同bash会话内执行，无需切换步骤
           git config --global user.name "wsc7758"
           git config --global user.email "xxx@shturl."
           git add tv.txt
