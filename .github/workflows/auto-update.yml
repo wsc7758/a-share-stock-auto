@@ -21,18 +21,20 @@ jobs:
           pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
           pip install requests m3u8
 
-      # 单步执行：移除全部pkill强杀逻辑，避免权限不足误杀Python
       - name: 测速+生成文件+提交推送 单步执行
         timeout-minutes: 12
         run: |
           set -eo pipefail
-          # 仅执行Python测速，不启动任何后台杀进程脚本
-          PYTHONUNBUFFERED=1 python3 merge_speed.py
-          # 延长等待时间，纯靠系统自动回收TCP连接，不强制杀进程
+          # Python完全隔离在独立子shell，子shell结束自动回收全部网络线程
+          (
+            PYTHONUNBUFFERED=1 python3 merge_speed.py
+            sync
+            echo "Python测速子shell执行完毕"
+          )
+          # 子shell销毁后，无残留IO，直接向下执行git
           sync
-          sleep 8
+          sleep 3
 
-          # 完整git推送逻辑不变
           git config --global user.name "wsc7758"
           git config --global user.email "xxx@shturl."
           git add tv.txt
