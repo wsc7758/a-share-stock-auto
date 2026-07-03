@@ -21,29 +21,27 @@ jobs:
           pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
           pip install requests m3u8
 
-      # 第一步：仅测速，输出文件到系统临时目录，执行完直接销毁全部进程环境
       - name: 测速生成临时文件（独立环境，无git阻塞）
-        timeout-minutes: 4
+        timeout-minutes: 10
         run: |
           PYTHONUNBUFFERED=1 python3 merge_speed.py
-          # 把生成结果复制到系统全局临时目录，脱离仓库工作区
+          # 关键：休眠2分钟，等待系统自动回收全部残留socket
+          echo "测速完成，等待2分钟回收网络连接..."
+          sleep 120
           cp tv.txt /tmp/tmp_tv_m3u.txt
           sync
-          echo "测速完成，临时文件已写入/tmp，本步骤结束自动回收所有网络socket"
+          echo "临时文件写入完成，步骤正常退出"
 
-      # 第二步：全新干净环境，读取临时文件执行git推送，无任何残留IO干扰
       - name: 读取临时文件并提交推送
         timeout-minutes: 1
         run: |
           set -eo pipefail
           sync
-          # 从系统临时目录复制回仓库目录
           cp /tmp/tmp_tv_m3u.txt tv.txt
           sync
           git config --global user.name "wsc7758"
           git config --global user.email "xxx@shturl."
           git add tv.txt
-          # 屏蔽diff输出，无变更正常退出不报错
           if git diff --cached --quiet >/dev/null 2>&1; then
             echo "tv.txt无更新，任务正常完成"
             exit 0
