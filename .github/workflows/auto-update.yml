@@ -21,27 +21,34 @@ jobs:
           pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
           pip install requests m3u8
 
-      # 单步串行：Python执行 + git推送全程同一段shell，无步骤切换socket等待
+      # 测速+生成文件+提交推送 单步执行（新增后台异步杀进程，不阻塞主线程）
       - name: 测速+生成文件+提交推送 单步执行
         timeout-minutes: 12
         run: |
           set -eo pipefail
+          # 后台启动异步清理任务，Python运行同时并行查杀残留进程
+          (
+            sleep 30
+            pkill -9 -f python3 || true
+            pkill -9 -f curl || true
+            sync
+          ) &
+          CLEAN_PID=$!
+
           # 执行分拣脚本，不改动py文件任何代码
           PYTHONUNBUFFERED=1 python3 merge_speed.py
-          # 强制磁盘刷新缓存
-          sync
-          sleep 1
-          # 兜底查杀所有python网络后台进程，释放socket句柄
-          pkill -9 -f python3 || true
-          pkill -9 -f curl || true
           sync
           sleep 0.5
 
-          # 下面全部git逻辑，和python在同一个bash会话串行执行
+          # 等待后台清理进程结束，确保socket全部释放
+          wait $CLEAN_PID
+          sync
+          sleep 0.3
+
+          # 下面全部git逻辑，串行执行
           git config --global user.name "wsc7758"
           git config --global user.email "xxx@shturl."
           git add tv.txt
-          # 无变更容错，不报错
           if git diff --cached --quiet >/dev/null 2>&1; then
             echo "tv.txt无内容更新，任务正常结束"
             exit 0
