@@ -22,14 +22,22 @@ jobs:
           pip install requests m3u8
 
       - name: 执行分拣测速脚本，生成tv.txt
-        timeout-minutes: 10
+        timeout-minutes: 13
         run: |
           PYTHONUNBUFFERED=1 python3 merge_speed.py
           sync
           echo "Python业务执行完毕，等待所有python进程彻底销毁"
+          WAIT_KILL=0
           while pgrep -f "python3 merge_speed.py" >/dev/null; do
             sleep 1
+            WAIT_KILL=$((WAIT_KILL+1))
             echo "检测到残留python进程，继续等待回收..."
+            # 等待90秒仍未退出，强制杀进程放行下一步
+            if [ $WAIT_KILL -ge 90 ]; then
+              pkill -f "python3 merge_speed.py" || true
+              echo "等待超时，强制终止残留Python进程"
+              break
+            fi
           done
           sync
           echo "所有Python进程完全退出，本步骤结束"
