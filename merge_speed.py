@@ -1,4 +1,4 @@
-import sys
+导入系统
 sys.stdout.reconfigure(encoding="utf-8")
 import requests
 import concurrent.futures
@@ -20,20 +20,20 @@ urllib3.connectionpool.ConnectionPool._get_conn = no_reuse_conn
 SOURCE_FILE = "sources.txt"
 WHITE_LIST_FILE = "channel_whitelist.txt"
 OUTPUT_TXT = "tv.txt"
-STREAM_REQ_TIMEOUT = 1
-TASK_GLOBAL_TIMEOUT = 12
-BATCH_GLOBAL_TIMEOUT = 25
-MIN_VERTICAL_RES = 1080
-MAX_STREAM_PER_CHANNEL = 3
-SOURCE_FETCH_TIMEOUT = 3
-SOURCE_FETCH_WORKERS = 3
-STREAM_EVAL_WORKERS = 12
-batch_size = 60
-DEBUG_LOG = False
+STREAM_REQ_TIMEOUT = 11
+任务全局超时 = 1212
+BATCH_GLOBAL_TIMEOUT = 2525
+最小垂直分辨率 = 10801080
+每个通道的最大流数 = 33
+SOURCE_FETCH_TIMEOUT = 33
+SOURCE_FETCH_WORKERS = 33
+STREAM EVAL 工作人员 = 1212
+批次大小 = 6060
+DEBUG_LOG = 假False
 
-def is_stream_incompatible(url: str) -> bool:
-    ban_list = {"127.", "192.168.", "10.", "172.", "localhost", "rtmp://", "igmp://"}
-    lower_url = url.lower()
+def is_stream_incompatible(url: str) -> bool: is_stream_incompatible(url: str) -> bool:
+    ban_list = {'127.', '192.168.', '10.', '172.', 'localhost', 'rtmp://', 'igmp://'}{"127.", "192.168.", "10.", "172.", "localhost", "rtmp://", "igmp://"}
+    lower_url = url.lower()lower()
     return any(key in lower_url for key in ban_list)
 
 def get_stream_priority(url: str) -> int:
@@ -230,7 +230,15 @@ def main():
     qualified_channel_map = filter_best_streams(raw_channel_cache)
     print(f"【阶段2完成】完成测速筛选频道数量：{len(qualified_channel_map)}", flush=True)
     export_result(white_origin_list, qualified_channel_map)
-    # 极简收尾，无阻塞等待
+
+    # 新增核心根治代码：强制关闭所有http连接池，等待所有网络线程退出
+    import urllib3
+    urllib3.PoolManager().clear()
+    urllib3.disable_warnings()
+    # 等待2秒，让底层IO线程全部销毁
+    time.sleep(2)
+
+    # 原收尾打印
     urllib3.PoolManager().clear()
     os.sync()
     time.sleep(0.5)
