@@ -10,19 +10,21 @@ import urllib3
 import threading
 import os
 import datetime
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # 全局参数
 SOURCE_FILE = "sources.txt"
 WHITE_LIST_FILE = "channel_whitelist.txt"
 OUTPUT_TXT = "tv.txt"
-STREAM_TEST_TIMEOUT = 1  # 需求修改：单条链接测速1秒超时，超时直接丢弃本条
+STREAM_REQ_TIMEOUT = 1    # 单次head/get网络请求1秒超时
+TASK_WAIT_TIMEOUT = 12    # 单个测速线程总运行上限12秒，超12s停止测当前批次剩余链接
 MIN_VERTICAL_RES = 1080
 MAX_STREAM_PER_CHANNEL = 3
 SOURCE_FETCH_TIMEOUT = 3
 SOURCE_FETCH_WORKERS = 3
 STREAM_EVAL_WORKERS = 12
-batch_size = 60  # 每批60条链接，无整批总时长限制
+batch_size = 60
 DEBUG_LOG = False
 
 def is_stream_incompatible(url: str) -> bool:
@@ -47,11 +49,23 @@ def stream_quality_detect(url: str) -> tuple[float, int]:
     max_res = 720
     start = time.time()
     try:
-        # head与get均限制1秒
-        resp = requests.head(url, headers=headers, timeout=STREAM_TEST_TIMEOUT, stream=True, verify=False, allow_redirects=True)
+        resp = requests.head(
+            url,
+            headers=headers,
+            timeout=STREAM_REQ_TIMEOUT,
+            stream=True,
+            verify=False,
+            allow_redirects=True
+        )
         delay = round(time.time() - start, 3)
         if resp.status_code == 200:
-            resp_get = requests.get(url, headers=headers, timeout=STREAM_TEST_TIMEOUT, verify=False, stream=True)
+            resp_get = requests.get(
+                url,
+                headers=headers,
+                timeout=STREAM_REQ_TIMEOUT,
+                verify=False,
+                stream=True
+            )
             m3u_obj = m3u8.loads(resp_get.text[:2000])
             for track in m3u_obj.playlists:
                 if track.stream_info and track.stream_info.resolution:
@@ -62,6 +76,18 @@ def stream_quality_detect(url: str) -> tuple[float, int]:
     except Exception:
         pass
     return delay, max_res
+
+def batch_subtask(url_list: list[tuple[int, str, str]]) -> dict[int, tuple[float, int]]:
+    """单一线程批量处理一组链接，12秒超时后停止后续链接，已测成功数据全部返回"""
+    task_start = time.time()
+    local_result = {}
+    for real_idx, ch_name, url in url_list:
+        # 判断当前线程总耗时是否超过12秒，超时直接终止，已测数据返回
+        if time.time() - task_start >= TASK_WAIT_TIMEOUT:
+            break
+        delay, res = stream_quality_detect(url)
+        local_result[real_idx] = (delay, res)
+    return local_result
 
 def load_source_list() -> list[str]:
     source_list = []
@@ -138,28 +164,32 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
     print(f"【测速预加载】待测速总链接数量：{total_url}", flush=True)
 
     for start in range(0, total_url, batch_size):
-        batch_urls = all_tasks[start:start + batch_size]
+        batch_items = ch_url_index[start:start + batch_size]
         batch_end_idx = min(start + batch_size, total_url)
         print(f"【测速批次】{start+1} ~ {batch_end_idx} / {total_url}", flush=True)
+        # 均分当前批次60条链接给12个并发线程
+        sub_task_groups = [[] for _ in range(STREAM_EVAL_WORKERS)]
+        for idx, item in enumerate(batch_items):
+            sub_task_groups[idx % STREAM_EVAL_WORKERS].append(item)
         batch_fut_map = {}
         exe = concurrent.futures.ThreadPoolExecutor(max_workers=STREAM_EVAL_WORKERS)
         try:
-            for sub_idx, url in enumerate(batch_urls):
-                real_idx = start + sub_idx
-                fut = exe.submit(stream_quality_detect, url)
-                batch_fut_map[fut] = real_idx
-            # 无整批超时限制，单条1秒超时仅丢弃当前链接，继续测下一条
+            for group in sub_task_groups:
+                if not group:
+                    continue
+                fut = exe.submit(batch_subtask, group)
+                batch_fut_map[fut] = None
+            # 收集每个线程返回的已测速有效数据，线程超时已测数据全部保留
             for fu in concurrent.futures.as_completed(batch_fut_map):
-                real_idx = batch_fut_map[fu]
                 try:
-                    delay, res = fu.result(timeout=STREAM_TEST_TIMEOUT)
-                    task_result[real_idx] = (delay, res)
-                except concurrent.futures.TimeoutError:
-                    task_result[real_idx] = (9999, 0)
+                    sub_result = fu.result()
+                    task_result.update(sub_result)
                 except Exception:
-                    task_result[real_idx] = (9999, 0)
+                    continue
         finally:
-            exe.shutdown(wait=True)
+            exe.shutdown(wait=False, cancel_futures=True)
+            pool = urllib3.PoolManager()
+            pool.clear()
 
     ch_temp = defaultdict(list)
     for idx, ch_name, url in ch_url_index:
@@ -186,7 +216,6 @@ def export_result(white_origin: list[str], final_stream_map: dict[str, list[str]
                 lines.append(f"{ch_name},{link}")
     with open(OUTPUT_TXT, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
-        # 写入时间戳，保证每次文件变化，git可推送
         f.write(f"\n# 流水线自动生成更新时间：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         f.flush()
     os.sync()
@@ -220,7 +249,7 @@ def main():
     export_result(white_origin_list, qualified_channel_map)
     print("====== 脚本全部执行完毕 ======", flush=True)
 
-    # 等待Python层所有子线程销毁（最多15秒）
+    # 等待Python层线程销毁（最多15秒）
     wait_max = 15
     wait_cnt = 0
     while wait_cnt < wait_max:
@@ -231,12 +260,11 @@ def main():
         print(f"等待子线程销毁 {wait_cnt}/{wait_max}", flush=True)
         time.sleep(1)
 
-    # 释放urllib3底层C网络连接池，杜绝后台残留线程卡死步骤
+    # 最终释放底层网络连接池
     http_pool = urllib3.PoolManager()
     http_pool.clear()
     os.sync()
     time.sleep(2)
-    # 标记资源完全释放，后续git步骤强制60秒内上传tv.txt
     print("====== Python资源全部释放完成 ======", flush=True)
 
 if __name__ == "__main__":
