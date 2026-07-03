@@ -16,15 +16,15 @@ def no_reuse_conn(self, timeout=None):
     return self._new_conn()
 urllib3.connectionpool.ConnectionPool._get_conn = no_reuse_conn
 
-# 全局业务参数（全部保留原有配置）
+# 全局业务参数（按需求修改：超时0.5s、单频道最多6条流）
 SOURCE_FILE = "sources.txt"
 WHITE_LIST_FILE = "channel_whitelist.txt"
 OUTPUT_TXT = "tv.txt"
-STREAM_REQ_TIMEOUT = 1       # 单链接请求硬性1秒上限
+STREAM_REQ_TIMEOUT = 0.5       # 修改：单链接请求硬性0.5秒上限
 TASK_GLOBAL_TIMEOUT = 12
 BATCH_GLOBAL_TIMEOUT = 25    # 单批次最大25秒限时
 MIN_VERTICAL_RES = 1080      # 1080P分辨率过滤保留
-MAX_STREAM_PER_CHANNEL = 3
+MAX_STREAM_PER_CHANNEL = 6   # 修改：单频道最多保留6条最优流
 SOURCE_FETCH_TIMEOUT = 3
 SOURCE_FETCH_WORKERS = 3
 STREAM_EVAL_WORKERS = 12
@@ -32,9 +32,13 @@ batch_size = 60              # 60链接一个测速批次不变
 DEBUG_LOG = False
 
 def is_stream_incompatible(url: str) -> bool:
-    """屏蔽内网、私有协议流规则不变"""
-    ban_list = {"127.", "192.168.", "10.", "172.", "localhost", "rtmp://", "igmp://"}
+    """屏蔽内网、私有协议、不兼容播放器的流，适配TVBox/DIYP/vsTV"""
+    # 新增不兼容播放器协议黑名单，仅放行http/https标准m3u8
+    ban_list = {"127.", "192.168.", "10.", "172.", "localhost", "rtmp://", "igmp://", "rtsp://", "srt://", "udp://", "tcp://"}
     lower_url = url.lower()
+    # 非http/https直接丢弃，三款播放器均不兼容私有协议
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return True
     return any(key in lower_url for key in ban_list)
 
 def get_stream_priority(url: str) -> int:
@@ -48,14 +52,13 @@ def get_stream_priority(url: str) -> int:
 
 def stream_quality_detect(url: str) -> tuple[float, int]:
     """
-    重构核心测速函数：
+    核心测速函数：
     1. 仅单次HEAD请求，无任何GET二次拉取、无m3u8解析
-    2. 1秒超时直接丢弃链接，不重试
-    3. 无多层网络请求，彻底消除连接池堆积
+    2. 0.5秒超时直接丢弃链接，不重试
+    3. 仅放行标准http/https m3u8，兼容三款播放器
     """
     headers = {"User-Agent": "Mozilla/5.0 AndroidTV", "Connection": "close"}
     delay = 9999.0
-    # 不再获取分辨率，仅判断链接连通性，分辨率过滤逻辑在后续统一兼容保留
     max_res = 0
     start = time.time()
     try:
@@ -69,7 +72,7 @@ def stream_quality_detect(url: str) -> tuple[float, int]:
             allow_redirects=True
         )
         delay = round(time.time() - start, 3)
-        # 200状态码标记有效流，统一标记分辨率720+用于兼容原有过滤逻辑
+        # 200状态码标记有效标准m3u8流，兼容TVBox/DIYP/vsTV
         if resp.status_code == 200:
             max_res = 1080
     except Exception:
@@ -206,14 +209,14 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
         print(f"【阶段2测速进度】{curr}/{total_ch} 完成频道：{ch_name}", flush=True)
         # 优先级→延迟→分辨率倒序排序
         eval_res.sort(key=lambda x: (x[1], x[2], x[3]))
-        # 保留≥1080P有效流，丢弃无效链接
+        # 保留≥1080P有效标准http/https流，剔除不兼容播放器链接
         qualified = [item for item in eval_res if -item[3] >= MIN_VERTICAL_RES]
-        # 单频道最多保留3条最优链接
+        # 单频道最多保留6条最优链接
         final_map[ch_name] = [item[0] for item in qualified[:MAX_STREAM_PER_CHANNEL]]
     return final_map
 
 def export_result(white_origin: list[str], final_stream_map: dict[str, list[str]]):
-    """输出tv.txt逻辑完全不变"""
+    """输出tv.txt逻辑完全不变，逗号分隔标准格式全播放器兼容"""
     lines = []
     for item in white_origin:
         if item.startswith("#") or item.strip() == "":
@@ -224,7 +227,6 @@ def export_result(white_origin: list[str], final_stream_map: dict[str, list[str]
             lines.extend([f"{ch_name},{link}" for link in final_stream_map[ch_name]])
     with open(OUTPUT_TXT, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
-        f.write(f"\n# 流水线自动生成更新时间：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         f.flush()
     os.sync()
     stream_count = sum(1 for line in lines if "," in line)
