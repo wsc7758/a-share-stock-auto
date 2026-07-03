@@ -1,5 +1,5 @@
-sys.stdout.reconfigure(encoding="utf-8")
 import sys
+sys.stdout.reconfigure(encoding="utf-8")
 import requests
 import concurrent.futures
 import re
@@ -232,25 +232,18 @@ def main():
     print(f"【阶段2完成】完成测速筛选频道数量：{len(qualified_channel_map)}", flush=True)
     export_result(white_origin_list, qualified_channel_map)
 
-    # ========== 全部释放、退出逻辑全部缩进在main函数内部，一定会执行 ==========
+    # 资源释放全部在main内部，不会遗漏
     urllib3.PoolManager().clear()
     os.sync()
     time.sleep(0.5)
-
-    # 强制销毁所有网络连接池
     pool = urllib3.PoolManager()
     pool.clear()
     urllib3.disable_warnings()
-
-    # 等待所有子线程结束
     for t in threading.enumerate():
         if t is not threading.main_thread():
             t.join(timeout=1)
     time.sleep(1)
-
-    # 打印完成日志
     print("====== Python资源全部释放完成 ======", flush=True)
-    # 主动正常退出程序
     sys.exit(0)
 
 if __name__ == "__main__":
