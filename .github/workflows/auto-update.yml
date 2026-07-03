@@ -21,16 +21,16 @@ jobs:
           pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
           pip install requests m3u8
 
-      - name: 测速生成临时文件（独立环境，无git阻塞）
+      # 测速步骤：exec 强制替换进程，跑完立刻结束步骤，无视残留socket
+      - name: 测速生成临时文件（exec强制结束，杜绝句柄等待）
         timeout-minutes: 10
         run: |
           PYTHONUNBUFFERED=1 python3 merge_speed.py
-          # 关键：休眠2分钟，等待系统自动回收全部残留socket
-          echo "测速完成，等待2分钟回收网络连接..."
-          sleep 120
           cp tv.txt /tmp/tmp_tv_m3u.txt
           sync
-          echo "临时文件写入完成，步骤正常退出"
+          echo "测速完成，临时文件已写入/tmp"
+          # 关键：exec true 替换当前bash进程，Runner立刻判定步骤完成，不再等待后台socket
+          exec true
 
       - name: 读取临时文件并提交推送
         timeout-minutes: 1
