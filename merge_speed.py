@@ -20,7 +20,8 @@ SOURCE_FILE = "sources.txt"
 WHITE_LIST_FILE = "channel_whitelist.txt"
 OUTPUT_TXT = "tv.txt"
 STREAM_REQ_TIMEOUT = 1    # 单次网络请求1秒硬超时
-TASK_GLOBAL_TIMEOUT = 12  # 单个线程总运行上限12秒，超12s停止后续测速
+TASK_GLOBAL_TIMEOUT = 12  # 单个线程内部最长运行12秒
+BATCH_GLOBAL_TIMEOUT = 25 # 整批60条链接总限时25秒，超25秒直接结束本批
 MIN_VERTICAL_RES = 1080
 MAX_STREAM_PER_CHANNEL = 3
 SOURCE_FETCH_TIMEOUT = 3
@@ -80,15 +81,13 @@ def stream_quality_detect(url: str) -> tuple[float, int]:
     return delay, max_res
 
 def batch_subtask(url_group: list[tuple[int, str, str]]) -> dict[int, tuple[float, int]]:
-    """单线程批量测速：12秒循环计时防护，已测出有效链接全部返回，无signal"""
+    """单线程批量测速：线程内12秒上限，无单条详细日志"""
     task_start = time.time()
     local_result = {}
     for real_idx, ch_name, url in url_group:
-        # 线程总时长超过12秒，停止剩余链接，已测数据全部保留
+        # 线程内部12秒超时判断
         if time.time() - task_start >= TASK_GLOBAL_TIMEOUT:
-            print(f"【线程超时】已运行满12秒，停止本组剩余链接，已测{len(local_result)}条数据保留", flush=True)
             break
-        print(f"【测速中】{ch_name} | {url}", flush=True)
         delay, res = stream_quality_detect(url)
         local_result[real_idx] = (delay, res)
     return local_result
@@ -168,6 +167,7 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
     print(f"【测速预加载】待测速总链接数量：{total_url}", flush=True)
 
     for start in range(0, total_url, batch_size):
+        batch_start_time = time.time()
         batch_items = ch_url_index[start:start + batch_size]
         batch_end_idx = min(start + batch_size, total_url)
         print(f"【测速批次】{start+1} ~ {batch_end_idx} / {total_url}", flush=True)
@@ -176,22 +176,31 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
         for idx, item in enumerate(batch_items):
             sub_task_groups[idx % STREAM_EVAL_WORKERS].append(item)
         exe = concurrent.futures.ThreadPoolExecutor(max_workers=STREAM_EVAL_WORKERS)
+        futures = []
         try:
             futures = [exe.submit(batch_subtask, g) for g in sub_task_groups if g]
-            for fu in concurrent.futures.as_completed(futures):
-                try:
-                    sub_res = fu.result()
-                    # 合并本线程所有已测速数据，超时不丢失
-                    task_result.update(sub_res)
-                except Exception as e:
-                    print(f"【线程异常】线程执行出错，丢弃本组未完成链接，已测数据保留：{str(e)}", flush=True)
+            # 循环收集结果，同时监控批次总时长25秒上限
+            complete_futures = set()
+            while len(complete_futures) < len(futures):
+                # 批次已超时25秒，直接停止收集，丢弃未完成线程，保留已测数据
+                if time.time() - batch_start_time >= BATCH_GLOBAL_TIMEOUT:
+                    print(f"【批次超时】本批运行已满25秒，终止剩余未完成测速，已测数据全部保留", flush=True)
+                    break
+                for fu in concurrent.futures.as_completed(futures, timeout=1):
+                    if fu not in complete_futures:
+                        complete_futures.add(fu)
+                        try:
+                            sub_res = fu.result()
+                            task_result.update(sub_res)
+                        except Exception as e:
+                            print(f"【线程异常】本组线程出错，已测数据保留：{str(e)}", flush=True)
         finally:
-            # 取消未完成任务，不阻塞等待卡死IO
+            # 取消所有未完成任务，不阻塞等待卡死IO
             exe.shutdown(wait=False, cancel_futures=True)
             # 强制清空全局连接池，释放端口
             pool = urllib3.PoolManager()
             pool.clear()
-            print(f"【批次完成】{start+1}~{batch_end_idx} 批次所有线程资源回收完毕", flush=True)
+            print(f"【批次完成】{start+1}~{batch_end_idx} 批次资源回收完毕", flush=True)
 
     # 汇总所有测速结果，排序取最优3条
     ch_temp = defaultdict(list)
