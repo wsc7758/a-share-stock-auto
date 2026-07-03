@@ -21,29 +21,26 @@ jobs:
           pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
           pip install requests m3u8
 
-      # 测速步骤：新开独立子shell执行，子shell内exec彻底销毁全部IO
-      - name: 测速生成临时文件（独立子shell+exec强制释放所有句柄）
+      # 测速仅生成本地tv.txt，不复制到/tmp，彻底消除文件丢失问题
+      - name: 测速生成本地tv.txt（独立子shell+exec释放句柄）
         timeout-minutes: 10
         run: |
-          # 新开()子shell，所有Python产生的进程、socket全部归属于这个子shell
           (
             PYTHONUNBUFFERED=1 python3 merge_speed.py
-            cp tv.txt /tmp/tmp_tv_m3u.txt
             sync
-            echo "测速完成，临时文件已写入/tmp"
-            # 子shell内部exec替换进程，子shell直接退出，销毁全部后台socket
+            sleep 1
+            echo "测速完成，tv.txt已生成在工作目录"
             exec true
           )
-          # 子shell结束，主bash无任何遗留网络进程，步骤立刻完成
-          echo "测速子shell已完全退出，无残留IO"
+          echo "测速子shell完全退出"
 
-      - name: 读取临时文件并提交推送
+      # 直接读取本地tv.txt，无需复制临时文件，不会出现文件不存在报错
+      - name: git提交推送本地tv.txt
         timeout-minutes: 1
         run: |
           set -eo pipefail
           sync
-          cp /tmp/tmp_tv_m3u.txt tv.txt
-          sync
+          sleep 0.5
           git config --global user.name "wsc7758"
           git config --global user.email "xxx@shturl."
           git add tv.txt
