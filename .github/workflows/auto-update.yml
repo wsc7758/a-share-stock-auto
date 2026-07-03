@@ -21,48 +21,34 @@ jobs:
           pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
           pip install requests m3u8
 
-      - name: 目录校验
-        run: ls -la
-
-      - name: 执行分拣测速脚本
+      - name: 测速生成tv.txt并直接提交推送（合并单步，消除步骤切换卡顿）
+        timeout-minutes: 5
         run: |
+          set -eo pipefail
+          # 1. 执行分拣测速脚本（完全不改动merge_speed.py）
           PYTHONUNBUFFERED=1 python3 merge_speed.py
           sync
-          # 强化查杀：杀死所有python、网络请求、socket相关子进程
+          echo "测速完成，tv.txt已生成"
+          ls -lh tv.txt
+
+          # 2. 强制销毁所有残留网络/进程，防止阻塞git逻辑
           pkill -9 -f python3 || true
           pkill -9 -f curl || true
           pkill -9 -f wget || true
-          pkill -9 -f socket || true
           sync
-          # 兜底强制等待1秒，释放系统端口
-          sleep 1
-          echo "脚本执行完毕，tv.txt文件校验："
-          ls -lh tv.txt
-          tail -5 tv.txt
+          sleep 0.5
 
-      - name: 磁盘同步+git提交（独立60秒超时，修复无文件变更exit code 1报错）
-        timeout-minutes: 1
-        run: |
-          set -eo pipefail
-          echo "1. 磁盘同步锁定文件"
-          sync
-          sleep 0.3
-          echo "2. 配置Git提交用户"
+          # 3. Git配置、判断变更、提交推送，全部在同一步完成
           git config --global user.name "wsc7758"
           git config --global user.email "xxx@shturl."
-          echo "3. 将tv.txt加入暂存区"
           git add tv.txt
-          echo "4. 判断文件是否存在变更"
           if git diff --cached --quiet >/dev/null 2>&1; then
-            echo "tv.txt无更新，直接退出，跳过推送"
+            echo "tv.txt无更新，任务正常结束"
             exit 0
           fi
-          echo "5. 拉取远端最新代码防止冲突"
           git fetch origin main
           git reset --hard origin/main
           git add tv.txt
-          echo "6. 提交新版本tv.txt"
           git commit -m "流水线自动更新｜优选流媒体列表"
-          echo "7. 推送tv.txt至远端仓库（限时60秒）"
           git push origin main
-          echo "====tv.txt推送仓库成功===="
+          echo "====tv.txt已推送至仓库，任务全部完成===="
