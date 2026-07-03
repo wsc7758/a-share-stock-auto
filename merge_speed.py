@@ -20,7 +20,7 @@ urllib3.connectionpool.ConnectionPool._get_conn = no_reuse_conn
 SOURCE_FILE = "sources.txt"
 WHITE_LIST_FILE = "channel_whitelist.txt"
 OUTPUT_TXT = "tv.txt"
-STREAM_REQ_TIMEOUT = 0.5
+STREAM_REQ_TIMEOUT = 1
 TASK_GLOBAL_TIMEOUT = 12
 BATCH_GLOBAL_TIMEOUT = 25
 MIN_VERTICAL_RES = 1080
@@ -61,7 +61,8 @@ def stream_quality_detect(url: str) -> tuple[float, int]:
             allow_redirects=True
         )
         delay = round(time.time() - start, 3)
-        if resp.status_code == 200:
+        # 2xx/3xx 全部判定有效流，兼容跳转CCTV源
+        if 200 <= resp.status_code < 400:
             max_res = 1080
     except Exception:
         pass
@@ -103,7 +104,6 @@ def load_white_list() -> tuple[list, dict]:
             raw_line = line.rstrip("\n").strip()
             if not raw_line:
                 continue
-            # 匹配模板分类标记
             if raw_line.endswith(",#genre#"):
                 current_group = raw_line.replace(",#genre#", "")
                 group_info.append((current_group, []))
@@ -202,21 +202,18 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
         eval_res.sort(key=lambda x: (x[1], x[2], x[3]))
         qualified = [item for item in eval_res if -item[3] >= MIN_VERTICAL_RES]
         print(f"【频道统计】{ch_name} 达标链接总数：{len(qualified)}，单频道最大留存：{MAX_STREAM_PER_CHANNEL}", flush=True)
-        # 单层切片，最多6条流
         final_map[ch_name] = [item[0] for item in qualified[:MAX_STREAM_PER_CHANNEL]]
     return final_map
 
-# 输出函数：分类头格式统一为 分类名,#genre#，和你的模板完全匹配
+# 输出函数：分类表头严格匹配 分类名,#genre#
 def export_result(group_info: list, final_stream_map: dict[str, list[str]]):
     lines = []
     for group_name, ch_list in group_info:
-        # 关键修改：输出 #genre# 格式分类标题
         lines.append(f"{group_name},#genre#")
         for ch_name in ch_list:
             stream_list = final_stream_map.get(ch_name, [])
             for link in stream_list:
                 lines.append(f"{ch_name},{link}")
-        # 分类之间空行分隔
         lines.append("")
     with open(OUTPUT_TXT, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -242,7 +239,6 @@ def main():
                 print("【警告】单个直播源拉取超时，自动跳过", flush=True)
             except Exception as e:
                 print(f"【警告】直播源处理异常：{str(e)}", flush=True)
-    # 频道链接去重
     for ch in raw_channel_cache:
         raw_channel_cache[ch] = list(dict.fromkeys(raw_channel_cache[ch]))
     print(f"【阶段1完成】待测速频道总数量：{len(raw_channel_cache)}", flush=True)
@@ -250,7 +246,6 @@ def main():
     print(f"【阶段2完成】完成测速筛选频道数量：{len(qualified_channel_map)}", flush=True)
     export_result(group_info, qualified_channel_map)
 
-    # 完整收尾资源释放逻辑不变
     urllib3.PoolManager().clear()
     os.sync()
     time.sleep(0.5)
