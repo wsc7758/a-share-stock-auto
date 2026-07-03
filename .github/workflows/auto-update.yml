@@ -10,10 +10,25 @@ jobs:
     permissions:
       contents: write
     steps:
-      # 第一步：纯运行Python，生成tv.txt，步骤结束环境全部销毁
+      # 检出代码
+      - name: 检出仓库代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 安装Python依赖
+      - name: 安装Python依赖
+        run: |
+          python3 -m pip install --upgrade pip
+          pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+          pip install requests m3u8
+
+      # 第一步：运行Python，增加ls打印目录排查缺失文件
       - name: 执行分拣测速脚本，生成tv.txt
         timeout-minutes: 10
         run: |
+          ls -la
+          echo "====当前仓库根目录文件===="
           PYTHONUNBUFFERED=1 python3 merge_speed.py
           sync
           echo "分拣完成，tv.txt已生成"
