@@ -10,9 +10,8 @@ import urllib3
 import threading
 import os
 import datetime
-import signal
 
-# 屏蔽urllib3警告，禁用连接复用
+# 屏蔽urllib3警告，禁用长连接复用，每次请求关闭TCP
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 urllib3.connectionpool.ConnectionPool._get_conn = lambda self, timeout: self._new_conn()
 
@@ -21,7 +20,7 @@ SOURCE_FILE = "sources.txt"
 WHITE_LIST_FILE = "channel_whitelist.txt"
 OUTPUT_TXT = "tv.txt"
 STREAM_REQ_TIMEOUT = 1    # 单次网络请求1秒硬超时
-TASK_GLOBAL_TIMEOUT = 12  # 单个线程总运行上限12秒，超12s终止所有后续测速
+TASK_GLOBAL_TIMEOUT = 12  # 单个线程总运行上限12秒，超12s停止后续测速
 MIN_VERTICAL_RES = 1080
 MAX_STREAM_PER_CHANNEL = 3
 SOURCE_FETCH_TIMEOUT = 3
@@ -29,13 +28,6 @@ SOURCE_FETCH_WORKERS = 3
 STREAM_EVAL_WORKERS = 12
 batch_size = 60
 DEBUG_LOG = False
-
-# 信号处理：超时强制抛出异常，杀死阻塞网络请求
-class TaskTimeoutException(Exception):
-    pass
-
-def timeout_handler(signum, frame):
-    raise TaskTimeoutException("单链接测速全局12秒超时")
 
 def is_stream_incompatible(url: str) -> bool:
     ban_list = {"127.", "192.168.", "10.", "172.", "localhost", "rtmp://", "igmp://"}
@@ -88,25 +80,17 @@ def stream_quality_detect(url: str) -> tuple[float, int]:
     return delay, max_res
 
 def batch_subtask(url_group: list[tuple[int, str, str]]) -> dict[int, tuple[float, int]]:
-    """单线程批量测速：12秒全局超时，已测出有效链接全部返回，卡死请求强制终止"""
+    """单线程批量测速：12秒循环计时防护，已测出有效链接全部返回，无signal"""
     task_start = time.time()
     local_result = {}
-    # 注册12秒超时信号
-    signal.signal(signal.SIGALRM, timeout_handler)
-    signal.alarm(TASK_GLOBAL_TIMEOUT)
-    try:
-        for real_idx, ch_name, url in url_group:
-            # 双重防护：循环前置判断超时
-            if time.time() - task_start >= TASK_GLOBAL_TIMEOUT:
-                print(f"【线程超时】已运行满12秒，停止剩余链接，已测数据保留", flush=True)
-                break
-            print(f"【测速中】{ch_name} | {url}", flush=True)
-            delay, res = stream_quality_detect(url)
-            local_result[real_idx] = (delay, res)
-    except TaskTimeoutException:
-        print(f"【线程强制超时】线程总时长超过12秒，终止测速，已测{len(local_result)}条有效链接保留", flush=True)
-    finally:
-        signal.alarm(0)
+    for real_idx, ch_name, url in url_group:
+        # 线程总时长超过12秒，停止剩余链接，已测数据全部保留
+        if time.time() - task_start >= TASK_GLOBAL_TIMEOUT:
+            print(f"【线程超时】已运行满12秒，停止本组剩余链接，已测{len(local_result)}条数据保留", flush=True)
+            break
+        print(f"【测速中】{ch_name} | {url}", flush=True)
+        delay, res = stream_quality_detect(url)
+        local_result[real_idx] = (delay, res)
     return local_result
 
 def load_source_list() -> list[str]:
@@ -187,7 +171,7 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
         batch_items = ch_url_index[start:start + batch_size]
         batch_end_idx = min(start + batch_size, total_url)
         print(f"【测速批次】{start+1} ~ {batch_end_idx} / {total_url}", flush=True)
-        # 均分批次链接给12个线程
+        # 均分批次链接给12个并发线程
         sub_task_groups = [[] for _ in range(STREAM_EVAL_WORKERS)]
         for idx, item in enumerate(batch_items):
             sub_task_groups[idx % STREAM_EVAL_WORKERS].append(item)
