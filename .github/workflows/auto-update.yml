@@ -26,15 +26,16 @@ jobs:
 
       - name: 执行分拣测速脚本
         run: |
-          # 不使用外层timeout包裹，避免进程组残留
           PYTHONUNBUFFERED=1 python3 merge_speed.py
-          # 强制同步磁盘文件
           sync
-          # 主动查杀所有残留python/网络后台子进程，消除Runner等待卡顿
-          pkill -f python3 || true
-          pkill -f curl || true
-          pkill -f wget || true
+          # 强化查杀：杀死所有python、网络请求、socket相关子进程
+          pkill -9 -f python3 || true
+          pkill -9 -f curl || true
+          pkill -9 -f wget || true
+          pkill -9 -f socket || true
           sync
+          # 兜底强制等待1秒，释放系统端口
+          sleep 1
           echo "脚本执行完毕，tv.txt文件校验："
           ls -lh tv.txt
           tail -5 tv.txt
@@ -52,7 +53,6 @@ jobs:
           echo "3. 将tv.txt加入暂存区"
           git add tv.txt
           echo "4. 判断文件是否存在变更"
-          # 屏蔽输出，仅在if内捕获返回码，不会触发set -e失败
           if git diff --cached --quiet >/dev/null 2>&1; then
             echo "tv.txt无更新，直接退出，跳过推送"
             exit 0
