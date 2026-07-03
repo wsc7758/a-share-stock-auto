@@ -10,30 +10,32 @@ jobs:
     permissions:
       contents: write
     steps:
-      # 检出代码
       - name: 检出仓库代码
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 安装Python依赖
       - name: 安装Python依赖
         run: |
           python3 -m pip install --upgrade pip
           pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
           pip install requests m3u8
 
-      # 第一步：运行Python，增加ls打印目录排查缺失文件
+      # 第一步：运行Python + 循环等待python进程完全消失
       - name: 执行分拣测速脚本，生成tv.txt
         timeout-minutes: 10
         run: |
-          ls -la
-          echo "====当前仓库根目录文件===="
           PYTHONUNBUFFERED=1 python3 merge_speed.py
           sync
-          echo "分拣完成，tv.txt已生成"
+          echo "Python打印收尾日志完毕，等待python进程彻底退出"
+          while pgrep -f "python3 merge_speed.py" >/dev/null; do
+            sleep 1
+            echo "仍有python后台线程残留，继续等待..."
+          done
+          sync
+          echo "所有python进程已销毁，本步骤执行完毕"
 
-      # 第二步：全新干净shell，无任何Python残留，直接git推送
+      # 第二步：全新环境直接推送，不会再卡住
       - name: 提交推送tv.txt文件
         timeout-minutes: 3
         run: |
