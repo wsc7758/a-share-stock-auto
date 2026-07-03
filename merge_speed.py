@@ -179,14 +179,15 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
         futures = []
         try:
             futures = [exe.submit(batch_subtask, g) for g in sub_task_groups if g]
-            # 循环收集结果，同时监控批次总时长25秒上限
             complete_futures = set()
+            # 移除as_completed timeout参数，循环轮询，仅靠25秒批次总时长终止
             while len(complete_futures) < len(futures):
-                # 批次已超时25秒，直接停止收集，丢弃未完成线程，保留已测数据
+                # 批次运行满25秒强制终止，不等待剩余线程
                 if time.time() - batch_start_time >= BATCH_GLOBAL_TIMEOUT:
                     print(f"【批次超时】本批运行已满25秒，终止剩余未完成测速，已测数据全部保留", flush=True)
                     break
-                for fu in concurrent.futures.as_completed(futures, timeout=1):
+                # 无timeout参数，不会抛出TimeoutError
+                for fu in concurrent.futures.as_completed(futures):
                     if fu not in complete_futures:
                         complete_futures.add(fu)
                         try:
@@ -194,6 +195,7 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
                             task_result.update(sub_res)
                         except Exception as e:
                             print(f"【线程异常】本组线程出错，已测数据保留：{str(e)}", flush=True)
+                time.sleep(0.2)
         finally:
             # 取消所有未完成任务，不阻塞等待卡死IO
             exe.shutdown(wait=False, cancel_futures=True)
