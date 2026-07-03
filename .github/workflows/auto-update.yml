@@ -22,19 +22,44 @@ jobs:
           pip install requests m3u8
 
       - name: 测速+生成文件+提交推送 单步执行
-        timeout-minutes: 12
+        timeout-minutes: 15
         run: |
           set -eo pipefail
-          # Python完全隔离在独立子shell，子shell结束自动回收全部网络线程
-          (
-            PYTHONUNBUFFERED=1 python3 merge_speed.py
-            sync
-            echo "Python测速子shell执行完毕"
-          )
-          # 子shell销毁后，无残留IO，直接向下执行git
-          sync
-          sleep 3
+          # 1. 生成独立临时执行脚本，Python完全独立运行
+          cat > run_speed.sh << 'EOF'
+#!/bin/bash
+PYTHONUNBUFFERED=1 python3 merge_speed.py
+sync
+touch ./speed_finished.flag
+EOF
+          chmod +x run_speed.sh
 
+          # 2. nohup后台执行，完全脱离当前shell会话
+          nohup ./run_speed.sh > speed.log 2>&1 &
+          TASK_PID=$!
+          echo "测速后台进程PID: $TASK_PID"
+
+          # 3. 循环等待标志文件生成，代表Python全部跑完
+          WAIT_COUNT=0
+          while [ ! -f "./speed_finished.flag" ]; do
+            sleep 2
+            WAIT_COUNT=$((WAIT_COUNT+2))
+            echo "等待测速完成，已等待${WAIT_COUNT}秒..."
+            # 最长等待10分钟，兜底防死循环
+            if [ $WAIT_COUNT -ge 600 ]; then
+              echo "测速超时，终止后台进程"
+              kill $TASK_PID || true
+              exit 1
+            fi
+          done
+          echo "检测到测速完成标志文件，Python业务全部执行完毕"
+
+          # 4. 清理临时文件，此时无任何IO线程占用主shell
+          rm -f run_speed.sh speed.log speed_finished.flag
+          sync
+          sleep 2
+
+          # 5. 正常执行全套git推送逻辑
           git config --global user.name "wsc7758"
           git config --global user.email "xxx@shturl."
           git add tv.txt
