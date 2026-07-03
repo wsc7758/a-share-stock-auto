@@ -21,23 +21,29 @@ jobs:
           pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
           pip install requests m3u8
 
-      # 测速+文件处理+git推送全部合并单一步骤，无步骤切换阻塞
-      - name: 测速并直接提交推送（单步无跨步骤socket等待）
+      # 单步串行：Python执行 + git推送全程同一段shell，无步骤切换socket等待
+      - name: 测速+生成文件+提交推送 单步执行
         timeout-minutes: 12
         run: |
           set -eo pipefail
-          # 1. 执行分拣测速脚本
+          # 执行分拣脚本，不改动py文件任何代码
           PYTHONUNBUFFERED=1 python3 merge_speed.py
+          # 强制磁盘刷新缓存
+          sync
+          sleep 1
+          # 兜底查杀所有python网络后台进程，释放socket句柄
+          pkill -9 -f python3 || true
+          pkill -9 -f curl || true
           sync
           sleep 0.5
-          echo "测速完成，tv.txt已生成"
 
-          # 2. git全套操作，同bash会话内执行，无需切换步骤
+          # 下面全部git逻辑，和python在同一个bash会话串行执行
           git config --global user.name "wsc7758"
           git config --global user.email "xxx@shturl."
           git add tv.txt
+          # 无变更容错，不报错
           if git diff --cached --quiet >/dev/null 2>&1; then
-            echo "tv.txt无更新，任务正常完成"
+            echo "tv.txt无内容更新，任务正常结束"
             exit 0
           fi
           git fetch origin main
@@ -45,4 +51,4 @@ jobs:
           git add tv.txt
           git commit -m "流水线自动更新｜优选流媒体列表"
           git push origin main
-          echo "文件推送仓库成功"
+          echo "文件推送仓库完成，全部流程结束"
