@@ -21,7 +21,7 @@ jobs:
           pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
           pip install requests m3u8
 
-      # 测速步骤完全保留原样：独立子shell+exec释放句柄（不改动，保证能正常走到下一步）
+      # 测速步骤：原有独立子shell+exec逻辑完全不动，仅在子shell结束后增加强制杀残留进程
       - name: 测速生成临时文件（独立子shell+exec强制释放所有句柄）
         timeout-minutes: 10
         run: |
@@ -35,16 +35,23 @@ jobs:
             # 子shell内部exec替换进程，子shell直接退出，销毁全部后台socket
             exec true
           )
+          # 新增：强制杀死所有残留网络、python后台进程，彻底释放句柄
+          pkill -9 -f python3 || true
+          pkill -9 -f curl || true
+          pkill -9 -f wget || true
+          pkill -9 -f socket || true
+          sync
+          sleep 0.3
           # 子shell结束，主bash无任何遗留网络进程，步骤立刻完成
           echo "测速子shell已完全退出，无残留IO"
 
-      # 仅修改本段：增加文件容错判断，临时文件丢失则复用本地tv.txt，避免cp直接报错退出
+      # 读取临时文件并提交推送（带文件存在容错，防止/tmp文件丢失报错）
       - name: 读取临时文件并提交推送
         timeout-minutes: 1
         run: |
           set -eo pipefail
           sync
-          # 容错逻辑：如果/tmp临时文件存在就复制，不存在直接使用工作目录原生tv.txt
+          # 容错逻辑：临时文件存在则复制，不存在直接复用本地tv.txt
           if [ -f "/tmp/tmp_tv_m3u.txt" ]; then
             cp /tmp/tmp_tv_m3u.txt tv.txt
             echo "成功从临时目录加载tv.txt"
