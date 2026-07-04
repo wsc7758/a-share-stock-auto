@@ -9,19 +9,28 @@ import urllib3
 import os
 import threading
 
-# 全局业务参数：最低1080P垂直分辨率
+# 全局关闭HTTPS未校验警告，消除日志刷屏
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# 全局业务参数
 SOURCE_FILE = "sources.txt"
 WHITE_LIST_FILE = "channel_whitelist.txt"
 OUTPUT_TXT = "tv.txt"
 STREAM_REQ_TIMEOUT = 1.5
-BATCH_GLOBAL_TIMEOUT = 25  # 按要求不改动
+BATCH_GLOBAL_TIMEOUT = 25  # 按要求固定不修改
 MIN_VERTICAL_RES = 1080
 MAX_STREAM_PER_CHANNEL = 6
-SOURCE_FETCH_TIMEOUT = 6  # 延长源拉取超时
+SOURCE_FETCH_TIMEOUT = 6
 SOURCE_FETCH_WORKERS = 3
 STREAM_EVAL_WORKERS = 12
-batch_size = 60  # 按要求不改动并发数量
+batch_size = 60  # 按要求固定不修改
 DEBUG_LOG = False
+
+# 全局总运行超时控制
+GLOBAL_FORCE_STOP_SEC = 28 * 60  # 28分钟主动停止，导出已有成果
+GLOBAL_HARD_LIMIT_SEC = 30 * 60  # 30分钟系统硬上限
+# 静默卡死3分钟无心跳强制终止
+HEARTBEAT_STOP_SEC = 3 * 60
 
 # 标准化函数：提取 cctv+数字 核心标识，忽略横杠、大小写、后缀文字
 def standardize_core_id(raw_name: str) -> str:
@@ -151,7 +160,7 @@ def load_white_list() -> tuple[list, dict]:
                 group_info[-1][1].append(full_ch_name)
                 core_id = standardize_core_id(full_ch_name)
                 core_to_fullname[core_id] = full_ch_name
-    print(f"【阶段1-白名单加载】分类数：{len(group_info)}，频道映射：{core_to_fullname}", flush=True)
+    print(f"【阶段1-白名单加载】分类数：{len(group_info)}", flush=True)
     return group_info, core_to_fullname
 
 def fetch_channel_from_source(src_link: str, core_mapping: dict) -> list[tuple[str, str]]:
@@ -184,13 +193,14 @@ def fetch_channel_from_source(src_link: str, core_mapping: dict) -> list[tuple[s
         print(f"【警告】源 {src_link} 拉取异常：{str(e)}", flush=True)
     return result_pairs
 
-# 传入完整频道名->核心ID映射，避免重复读取白名单
-def filter_best_streams(channel_raw_map: dict[str, list[str]], fullname_to_core: dict) -> dict[str, list[str]]:
+# 新增入参 global_start_ts：脚本全局启动时间戳，last_heartbeat_ts：上次打印批次日志时间戳
+def filter_best_streams(channel_raw_map: dict[str, list[str]], fullname_to_core: dict, global_start_ts: float) -> dict[str, list[str]]:
     final_map = defaultdict(list)
     total_ch = len(channel_raw_map)
     ch_url_index = []
     curr_idx = 0
-    print(f"【全部待测速频道】{list(channel_raw_map.keys())}", flush=True)
+    print(f"【全部待测速频道总数】{total_ch}", flush=True)
+    last_heartbeat_ts = time.time()  # 初始化心跳时间戳
 
     for ch_name, url_list in channel_raw_map.items():
         target_core = fullname_to_core[ch_name]
@@ -200,12 +210,25 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]], fullname_to_core:
     task_result = {}
     total_url = len(ch_url_index)
     print(f"【测速预加载】待检测总链接：{total_url}", flush=True)
+    last_heartbeat_ts = time.time()  # 刷新心跳
 
     for start in range(0, total_url, batch_size):
-        batch_start_time = time.time()
+        now_ts = time.time()
+        # 1. 判断静默卡死3分钟无心跳
+        if now_ts - last_heartbeat_ts >= HEARTBEAT_STOP_SEC:
+            print(f"【静默卡死预警】已连续3分钟无任何批次输出，强制终止测速，导出当前已完成数据", flush=True)
+            break
+        # 2. 判断全局28分钟总时长
+        run_cost = now_ts - global_start_ts
+        if run_cost >= GLOBAL_FORCE_STOP_SEC:
+            print(f"【全局主动停止】已运行28分钟，放弃剩余未检测链接，使用当前已完成数据导出tv.txt", flush=True)
+            break
+
+        batch_start_time = now_ts
         batch_items = ch_url_index[start:start + batch_size]
         batch_end_idx = min(start + batch_size, total_url)
         print(f"【测速批次】{start + 1} ~ {batch_end_idx} / {total_url}", flush=True)
+        last_heartbeat_ts = time.time()  # 打印批次日志，刷新心跳
         sub_task_groups = [[] for _ in range(STREAM_EVAL_WORKERS)]
         for idx, item in enumerate(batch_items):
             sub_task_groups[idx % STREAM_EVAL_WORKERS].append(item)
@@ -215,8 +238,13 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]], fullname_to_core:
             futures.append(exe.submit(batch_subtask, g))
         complete_futures = set()
         while len(complete_futures) < len(futures):
-            if time.time() - batch_start_time >= BATCH_GLOBAL_TIMEOUT:
-                print(f"【批次超时】已满{BATCH_GLOBAL_TIMEOUT}秒，终止剩余测速", flush=True)
+            # 内层循环也持续检测心跳卡死
+            inner_now = time.time()
+            if inner_now - last_heartbeat_ts >= HEARTBEAT_STOP_SEC:
+                print(f"【静默卡死预警】批次内连续3分钟无输出，强制终止", flush=True)
+                break
+            if inner_now - batch_start_time >= BATCH_GLOBAL_TIMEOUT:
+                print(f"【批次超时】已满{BATCH_GLOBAL_TIMEOUT}秒，终止当前批次剩余测速", flush=True)
                 break
             try:
                 for fu in concurrent.futures.as_completed(futures, timeout=0.3):
@@ -228,8 +256,12 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]], fullname_to_core:
                             print(f"【线程异常】{str(e)}", flush=True)
             except concurrent.futures.TimeoutError:
                 continue
-        exe.shutdown(wait=True, cancel_futures=True)
-        print(f"【批次完成】{start+1}~{batch_end_idx} 资源回收完毕", flush=True)
+        # 修复卡死：强制取消未完成任务，非阻塞关闭线程池，立刻进入下一批
+        for fu in futures:
+            fu.cancel()
+        exe.shutdown(wait=False)
+        print(f"【测速批次】{start+1}~{batch_end_idx} 处理完成", flush=True)
+        last_heartbeat_ts = time.time()  # 批次结束刷新心跳
 
     ch_temp = defaultdict(list)
     for idx, ch_name, url, _ in ch_url_index:
@@ -240,12 +272,11 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]], fullname_to_core:
     curr = 0
     for ch_name, eval_res in ch_temp.items():
         curr += 1
-        print(f"【测速进度】{curr}/{total_ch} 频道：{ch_name}", flush=True)
-        # 排序规则 频道匹配 > 延迟优先 > 分辨率，移除源优先级权重
+        # 已删除单频道进度、单频道统计打印，极简日志
+        # 排序规则：频道匹配 > 延迟从小到大 > 分辨率从高到低，移除源优先级权重
         eval_res.sort(key=lambda x: (x[2], x[3], x[4]))
-        # 双重过滤：1.频道匹配成功 2.垂直分辨率≥1080
+        # 双重过滤：频道匹配成功 + 垂直分辨率≥1080
         qualified = [item for item in eval_res if (item[2] is False) and (-item[4] >= MIN_VERTICAL_RES)]
-        print(f"【频道统计】{ch_name} 匹配+1080P达标链接：{len(qualified)}，最多留存{MAX_STREAM_PER_CHANNEL}条", flush=True)
         final_map[ch_name] = [item[0] for item in qualified[:MAX_STREAM_PER_CHANNEL]]
     return final_map
 
@@ -267,6 +298,7 @@ def export_result(group_info: list, final_stream_map: dict[str, list[str]]):
 
 def main():
     print("====== IPTV分拣启动 ======", flush=True)
+    global_start_time = time.time()  # 记录脚本全局启动时间戳
     source_pool = load_source_list()
     group_info, core_mapping = load_white_list()
     # 构建反向映射：完整频道名 -> 标准化核心ID
@@ -289,12 +321,12 @@ def main():
                         print("【警告】源拉取重试后依旧超时，自动跳过", flush=True)
                     else:
                         print("【提示】源拉取超时，正在重试一次", flush=True)
-    # 单频道链接去重
+    # 单频道完全相同URL去重
     for ch in raw_channel_cache:
         raw_channel_cache[ch] = list(dict.fromkeys(raw_channel_cache[ch]))
     print(f"【源解析完成】待测速频道总数：{len(raw_channel_cache)}", flush=True)
-    # 传入频道-核心ID映射，测速校验频道匹配
-    qualified_map = filter_best_streams(raw_channel_cache, fullname_to_core)
+    # 传入全局启动时间戳，开启28分钟超时判断+3分钟静默心跳监控
+    qualified_map = filter_best_streams(raw_channel_cache, fullname_to_core, global_start_time)
     print(f"【测速筛选完成】有效高清匹配频道数量：{len(qualified_map)}", flush=True)
     export_result(group_info, qualified_map)
 
