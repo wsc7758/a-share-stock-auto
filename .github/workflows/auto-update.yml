@@ -25,7 +25,7 @@ jobs:
           pip install requests
 
       - name: 执行分拣测速脚本，生成全新tv.txt
-        timeout-minutes: 13
+        timeout-minutes: 30
         run: |
           PYTHONUNBUFFERED=1 python3 -c "import merge_speed; print('【运行校验】MAX_STREAM_PER_CHANNEL =', merge_speed.MAX_STREAM_PER_CHANNEL)"
           PYTHONUNBUFFERED=1 python3 merge_speed.py
