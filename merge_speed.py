@@ -8,7 +8,6 @@ import time
 import urllib3
 import os
 import datetime
-import threading
 
 # 全局禁用长连接，单次请求用完立刻销毁socket
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -31,7 +30,7 @@ STREAM_EVAL_WORKERS = 12
 batch_size = 60
 DEBUG_LOG = False
 
-# 标准化核心ID：统一cctv数字，忽略大小写、横杠、后缀汉字
+# 标准化核心ID：统一小写、去横杠空格，只提取cctv数字
 def standardize_core_id(raw_name: str) -> str:
     s = raw_name.lower().replace("-", "").replace(" ", "")
     match = re.search(r"cctv(\d+)", s)
@@ -54,34 +53,50 @@ def get_stream_priority(url: str) -> int:
         return 0
     return 1
 
-def stream_quality_detect(url: str) -> tuple[float, int]:
+# 解析m3u8：返回(流核心ID, 是否含广告分片标记)
+def parse_m3u8_meta(headers, m3u_url: str) -> tuple[str | None, bool]:
+    try:
+        resp = requests.get(m3u_url, headers=headers, timeout=1.0, verify=False, allow_redirects=True)
+        text = resp.text
+        has_ad = bool(re.search(r"#EXT-X-DISCONTINUITY", text))
+        tvg_id_match = re.search(r'tvg-id="([^"]+)"', text)
+        tvg_name_match = re.search(r'#EXTINF:-1,([^\n]+)', text)
+        stream_core = None
+        if tvg_id_match:
+            stream_core = standardize_core_id(tvg_id_match.group(1))
+        elif tvg_name_match:
+            stream_core = standardize_core_id(tvg_name_match.group(1))
+        return stream_core, has_ad
+    except Exception:
+        return None, False
+
+# 测速返回：延迟、分辨率、是否频道匹配、是否含广告
+def stream_quality_detect(url: str, target_core: str) -> tuple[float, int, bool, bool]:
     headers = {"User-Agent": "Mozilla/5.0 AndroidTV", "Connection": "close"}
     delay = 9999.0
     max_res = 0
+    match_flag = False
+    ad_flag = False
     start = time.time()
     try:
-        resp = requests.head(
-            url,
-            headers=headers,
-            timeout=STREAM_REQ_TIMEOUT,
-            stream=True,
-            verify=False,
-            allow_redirects=True
-        )
+        resp = requests.head(url, headers=headers, timeout=STREAM_REQ_TIMEOUT, stream=True, verify=False, allow_redirects=True)
         delay = round(time.time() - start, 3)
         if 200 <= resp.status_code < 400:
             max_res = 1080
+            stream_core, ad_flag = parse_m3u8_meta(headers, url)
+            if stream_core == target_core:
+                match_flag = True
     except Exception:
         pass
-    return delay, max_res
+    return delay, max_res, match_flag, ad_flag
 
-def batch_subtask(url_group: list[tuple[int, str, str]]) -> dict[int, tuple[float, int]]:
+def batch_subtask(url_group: list[tuple[int, str, str, str]]) -> dict[int, tuple[float, int, bool, bool]]:
     task_start = time.time()
     local_result = {}
-    for real_idx, ch_name, url in url_group:
+    for real_idx, ch_name, url, target_core in url_group:
         if time.time() - task_start >= TASK_GLOBAL_TIMEOUT:
             break
-        local_result[real_idx] = stream_quality_detect(url)
+        local_result[real_idx] = stream_quality_detect(url, target_core)
     return local_result
 
 def load_source_list() -> list[str]:
@@ -101,7 +116,7 @@ def load_source_list() -> list[str]:
     print(f"【阶段1-源池加载】待拉取直播源节点总数：{len(source_list)}", flush=True)
     return source_list
 
-# 白名单：core_id -> 标准完整频道名（CCTV-1综合）
+# 白名单：core_id -> 标准完整频道名
 def load_white_list() -> tuple[list, dict]:
     group_info = []
     core_to_fullname = dict()
@@ -123,7 +138,7 @@ def load_white_list() -> tuple[list, dict]:
     print(f"【阶段1-白名单加载】共读取分类数量：{len(group_info)}，频道核心映射数量：{len(core_to_fullname)}", flush=True)
     return group_info, core_to_fullname
 
-# 拉源：标准化ID匹配，自动替换为白名单标准全名
+# 拉源：标准化匹配，统一替换为白名单标准全名
 def fetch_channel_from_source(src_link: str, core_mapping: dict) -> list[tuple[str, str]]:
     headers = {"User-Agent": "Mozilla/5.0 Chrome/120.0.0.0 Safari/537.36", "Connection": "close"}
     result_pairs = []
@@ -132,6 +147,7 @@ def fetch_channel_from_source(src_link: str, core_mapping: dict) -> list[tuple[s
     try:
         resp = requests.get(src_link, headers=headers, timeout=SOURCE_FETCH_TIMEOUT, verify=False)
         text = resp.text
+        # txt 频道,url
         txt_pattern = re.compile(r"([^,]+),(https?://[^\n]+)")
         for raw_ch, stream_url in txt_pattern.findall(text):
             raw_ch = raw_ch.strip().replace("#genre#", "")
@@ -142,6 +158,7 @@ def fetch_channel_from_source(src_link: str, core_mapping: dict) -> list[tuple[s
             if src_core in core_mapping:
                 full_ch_name = core_mapping[src_core]
                 result_pairs.append((full_ch_name, stream_url))
+        # m3u EXTINF
         m3u_pattern = re.compile(r"#EXTINF:-1,([^\n]+)\n(https?://[^\n]+)")
         for raw_ch, stream_url in m3u_pattern.findall(text):
             raw_ch = raw_ch.strip()
@@ -167,7 +184,7 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]], core_mapping: dic
     for ch_name, url_list in channel_raw_map.items():
         target_cid = fullname_to_core[ch_name]
         for url in url_list:
-            ch_url_index.append((curr_idx, ch_name, url))
+            ch_url_index.append((curr_idx, ch_name, url, target_cid))
             curr_idx += 1
     task_result = {}
     total_url = len(ch_url_index)
@@ -209,21 +226,35 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]], core_mapping: dic
             pool_tmp = urllib3.PoolManager()
             pool_tmp.clear()
             print(f"【批次完成】{start+1}~{batch_end_idx} 线程池已全部清空，直接进入下一批次", flush=True)
-
+    # 存储元组：(url, 优先级, 是否不匹配频道, 延迟, -分辨率, 是否含广告)
     ch_temp = defaultdict(list)
-    for idx, ch_name, url in ch_url_index:
-        delay, res = task_result.get(idx, (9999, 0))
-        ch_temp[ch_name].append((url, get_stream_priority(url), delay, -res))
+    for idx, ch_name, url, _ in ch_url_index:
+        delay, res_h, is_match, has_ad = task_result.get(idx, (9999, 0, False, False))
+        prio = get_stream_priority(url)
+        ch_temp[ch_name].append((url, prio, not is_match, delay, -res_h, has_ad))
+
     curr = 0
     for ch_name, eval_res in ch_temp.items():
         curr += 1
         print(f"【阶段2测速进度】{curr}/{total_ch} 完成频道：{ch_name}", flush=True)
-        eval_res.sort(key=lambda x: (x[1], x[2], x[3]))
-        qualified = [item for item in eval_res if -item[3] >= MIN_VERTICAL_RES]
+        # 排序：频道匹配优先 > 源优先级 > 延迟从小到大 > 分辨率从高到低
+        eval_res.sort(key=lambda x: (x[2], x[1], x[3], x[4]))
+        qualified = []
+        for item in eval_res:
+            url, prio, not_match, delay, neg_h, has_ad = item
+            real_h = -neg_h
+            # 三层过滤：1.串台直接删 2.含广告分片直接删 3.分辨率达标
+            if not_match:
+                continue
+            if has_ad:
+                continue
+            if real_h >= MIN_VERTICAL_RES:
+                qualified.append(item)
         print(f"【频道统计】{ch_name} 达标链接总数：{len(qualified)}，单频道最大留存：{MAX_STREAM_PER_CHANNEL}", flush=True)
         final_map[ch_name] = [item[0] for item in qualified[:MAX_STREAM_PER_CHANNEL]]
     return final_map
 
+# 输出tv.txt，严格使用白名单标准频道名+#genre分类
 def export_result(group_info: list, final_stream_map: dict[str, list[str]]):
     lines = []
     for group_name, ch_list in group_info:
@@ -256,11 +287,12 @@ def main():
                 print("【警告】单个直播源拉取超时，自动跳过", flush=True)
             except Exception as e:
                 print(f"【警告】直播源处理异常：{str(e)}", flush=True)
+    # 同频道重复url去重
     for ch in raw_channel_cache:
         raw_channel_cache[ch] = list(dict.fromkeys(raw_channel_cache[ch]))
     print(f"【阶段1完成】待测速频道总数量：{len(raw_channel_cache)}", flush=True)
     qualified_channel_map = filter_best_streams(raw_channel_cache, core_mapping)
-    print(f"【阶段2完成】完成测速频道数量：{len(qualified_channel_map)}", flush=True)
+    print(f"【阶段2完成】完成测速筛选频道数量：{len(qualified_channel_map)}", flush=True)
     export_result(group_info, qualified_channel_map)
 
     urllib3.PoolManager().clear()
@@ -269,10 +301,7 @@ def main():
     pool = urllib3.PoolManager()
     pool.clear()
     urllib3.disable_warnings()
-    for t in threading.enumerate():
-        if t is not threading.main_thread():
-            t.join(timeout=1)
-    time.sleep(1)
+    time.sleep(0.5)
     print("====== Python资源全部释放完成 ======", flush=True)
     sys.exit(0)
 
