@@ -150,7 +150,7 @@ def load_source_list() -> list[str]:
     print(f"【阶段1-源池加载】待拉取直播源节点总数：{len(source_list)}", flush=True)
     return source_list
 
-# 白名单：core_id -> 标准完整频道名（CCTV-1综合）
+# 修复后的白名单加载函数
 def load_white_list() -> tuple[list, dict]:
     group_info = []
     core_to_fullname = dict()
@@ -166,7 +166,8 @@ def load_white_list() -> tuple[list, dict]:
                 continue
             if current_group:
                 clean_ch = raw_line.strip()
-                group_info[-1].append(clean_ch)
+                # 修复：取元组下标1的列表执行append
+                group_info[-1][1].append(clean_ch)
                 ch_core = standardize_core_id(clean_ch)
                 core_to_fullname[ch_core] = clean_ch
     print(f"【阶段1-白名单加载】共读取分类数量：{len(group_info)}，频道核心映射数量：{len(core_to_fullname)}", flush=True)
