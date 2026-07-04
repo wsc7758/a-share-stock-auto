@@ -31,6 +31,14 @@ STREAM_EVAL_WORKERS = 12
 batch_size = 60
 DEBUG_LOG = False
 
+# 标准化核心ID：统一cctv数字，忽略大小写、横杠、后缀汉字
+def standardize_core_id(raw_name: str) -> str:
+    s = raw_name.lower().replace("-", "").replace(" ", "")
+    match = re.search(r"cctv(\d+)", s)
+    if match:
+        return f"cctv{match.group(1)}"
+    return s
+
 def is_stream_incompatible(url: str) -> bool:
     ban_list = {"127.", "192.168.", "10.", "172.", "localhost", "rtmp://", "igmp://", "rtsp://", "srt://", "udp://", "tcp://"}
     lower_url = url.lower()
@@ -61,7 +69,6 @@ def stream_quality_detect(url: str) -> tuple[float, int]:
             allow_redirects=True
         )
         delay = round(time.time() - start, 3)
-        # 2xx/3xx 全部判定有效流，兼容跳转CCTV源
         if 200 <= resp.status_code < 400:
             max_res = 1080
     except Exception:
@@ -94,14 +101,13 @@ def load_source_list() -> list[str]:
     print(f"【阶段1-源池加载】待拉取直播源节点总数：{len(source_list)}", flush=True)
     return source_list
 
-# 修复：完整清洗每行换行/空格，解决#genre#分组识别失败丢失CCTV
+# 白名单：core_id -> 标准完整频道名（CCTV-1综合）
 def load_white_list() -> tuple[list, dict]:
     group_info = []
-    channel_to_group = dict()
+    core_to_fullname = dict()
     current_group = ""
     with open(WHITE_LIST_FILE, "r", encoding="utf-8") as f:
         for line in f.readlines():
-            # 彻底清除\r \n 首尾空格
             raw_line = line.replace("\r","").replace("\n","").strip()
             if not raw_line:
                 continue
@@ -112,13 +118,13 @@ def load_white_list() -> tuple[list, dict]:
             if current_group:
                 clean_ch = raw_line.strip()
                 group_info[-1][1].append(clean_ch)
-                channel_to_group[clean_ch] = current_group
-    print(f"【阶段1-白名单加载】共读取分类数量：{len(group_info)}，白名单频道总数：{len(channel_to_group)}", flush=True)
-    # 打印所有白名单频道，校验CCTV是否存在
-    print(f"【白名单全频道列表】{list(channel_to_group.keys())}", flush=True)
-    return group_info, channel_to_group
+                ch_core = standardize_core_id(clean_ch)
+                core_to_fullname[ch_core] = clean_ch
+    print(f"【阶段1-白名单加载】共读取分类数量：{len(group_info)}，频道核心映射数量：{len(core_to_fullname)}", flush=True)
+    return group_info, core_to_fullname
 
-def fetch_channel_from_source(src_link: str, white_channel_set: set[str]) -> list[tuple[str, str]]:
+# 拉源：标准化ID匹配，自动替换为白名单标准全名
+def fetch_channel_from_source(src_link: str, core_mapping: dict) -> list[tuple[str, str]]:
     headers = {"User-Agent": "Mozilla/5.0 Chrome/120.0.0.0 Safari/537.36", "Connection": "close"}
     result_pairs = []
     if src_link.startswith("//"):
@@ -127,33 +133,39 @@ def fetch_channel_from_source(src_link: str, white_channel_set: set[str]) -> lis
         resp = requests.get(src_link, headers=headers, timeout=SOURCE_FETCH_TIMEOUT, verify=False)
         text = resp.text
         txt_pattern = re.compile(r"([^,]+),(https?://[^\n]+)")
-        for ch_name, stream_url in txt_pattern.findall(text):
-            ch_name = ch_name.strip().replace("#genre#", "")
+        for raw_ch, stream_url in txt_pattern.findall(text):
+            raw_ch = raw_ch.strip().replace("#genre#", "")
             stream_url = stream_url.strip()
-            if ch_name.startswith("#"):
+            if raw_ch.startswith("#") or is_stream_incompatible(stream_url):
                 continue
-            ch_lower = ch_name.lower()
-            if ch_name in white_channel_set and not is_stream_incompatible(stream_url):
-                result_pairs.append((ch_name, stream_url))
+            src_core = standardize_core_id(raw_ch)
+            if src_core in core_mapping:
+                full_ch_name = core_mapping[src_core]
+                result_pairs.append((full_ch_name, stream_url))
         m3u_pattern = re.compile(r"#EXTINF:-1,([^\n]+)\n(https?://[^\n]+)")
-        for ch_name, stream_url in m3u_pattern.findall(text):
-            ch_name = ch_name.strip()
+        for raw_ch, stream_url in m3u_pattern.findall(text):
+            raw_ch = raw_ch.strip()
             stream_url = stream_url.strip()
-            if ch_name in white_channel_set and not is_stream_incompatible(stream_url):
-                result_pairs.append((ch_name, stream_url))
+            if is_stream_incompatible(stream_url):
+                continue
+            src_core = standardize_core_id(raw_ch)
+            if src_core in core_mapping:
+                full_ch_name = core_mapping[src_core]
+                result_pairs.append((full_ch_name, stream_url))
     except Exception as e:
         if DEBUG_LOG:
             print(f"【调试】源 {src_link} 拉取异常：{str(e)}", flush=True)
     return result_pairs
 
-def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list[str]]:
+def filter_best_streams(channel_raw_map: dict[str, list[str]], core_mapping: dict) -> dict[str, list[str]]:
     final_map = defaultdict(list)
     total_ch = len(channel_raw_map)
     ch_url_index = []
     curr_idx = 0
-    # 打印所有待测速频道，确认CCTV是否进入测速队列
+    fullname_to_core = {full_name:cid for cid,full_name in core_mapping.items()}
     print(f"【全部待测速频道列表】{list(channel_raw_map.keys())}", flush=True)
     for ch_name, url_list in channel_raw_map.items():
+        target_cid = fullname_to_core[ch_name]
         for url in url_list:
             ch_url_index.append((curr_idx, ch_name, url))
             curr_idx += 1
@@ -176,8 +188,10 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
             complete_futures = set()
             while len(complete_futures) < len(futures):
                 if time.time() - batch_start_time >= BATCH_GLOBAL_TIMEOUT:
-                    print(f"【批次超时】本批运行已满25秒，终止剩余未完成测速，已测数据全部保留", flush=True)
+                    print(f"【批次超时】本批运行已满25秒，终止剩余未完成测速，已测数据全部保留，强制清理所有线程", flush=True)
                     urllib3.PoolManager().clear()
+                    for fu in futures:
+                        fu.cancel()
                     break
                 try:
                     for fu in concurrent.futures.as_completed(futures, timeout=0.3):
@@ -190,11 +204,11 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
                 except concurrent.futures.TimeoutError:
                     continue
         finally:
-            exe.shutdown(wait=True, cancel_futures=False)
+            exe.shutdown(wait=False, cancel_futures=True)
             urllib3.PoolManager().clear()
             pool_tmp = urllib3.PoolManager()
             pool_tmp.clear()
-            print(f"【批次完成】{start+1}~{batch_end_idx} 批次资源回收完毕", flush=True)
+            print(f"【批次完成】{start+1}~{batch_end_idx} 线程池已全部清空，直接进入下一批次", flush=True)
 
     ch_temp = defaultdict(list)
     for idx, ch_name, url in ch_url_index:
@@ -210,7 +224,6 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]]) -> dict[str, list
         final_map[ch_name] = [item[0] for item in qualified[:MAX_STREAM_PER_CHANNEL]]
     return final_map
 
-# 输出函数：分类表头严格匹配 分类名,#genre#
 def export_result(group_info: list, final_stream_map: dict[str, list[str]]):
     lines = []
     for group_name, ch_list in group_info:
@@ -230,16 +243,15 @@ def export_result(group_info: list, final_stream_map: dict[str, list[str]]):
 def main():
     print("====== IPTV分拣脚本启动 ======", flush=True)
     source_pool = load_source_list()
-    group_info, channel_to_group = load_white_list()
-    white_channel_set = set(channel_to_group.keys())
+    group_info, core_mapping = load_white_list()
     raw_channel_cache = defaultdict(list)
     with concurrent.futures.ThreadPoolExecutor(max_workers=SOURCE_FETCH_WORKERS) as exe:
-        futures = [exe.submit(fetch_channel_from_source, s, white_channel_set) for s in source_pool]
+        futures = [exe.submit(fetch_channel_from_source, s, core_mapping) for s in source_pool]
         for fu in futures:
             try:
                 pair_list = fu.result(timeout=SOURCE_FETCH_TIMEOUT + 2)
-                for ch, link in pair_list:
-                    raw_channel_cache[ch].append(link)
+                for full_ch, link in pair_list:
+                    raw_channel_cache[full_ch].append(link)
             except concurrent.futures.TimeoutError:
                 print("【警告】单个直播源拉取超时，自动跳过", flush=True)
             except Exception as e:
@@ -247,8 +259,8 @@ def main():
     for ch in raw_channel_cache:
         raw_channel_cache[ch] = list(dict.fromkeys(raw_channel_cache[ch]))
     print(f"【阶段1完成】待测速频道总数量：{len(raw_channel_cache)}", flush=True)
-    qualified_channel_map = filter_best_streams(raw_channel_cache)
-    print(f"【阶段2完成】完成测速筛选频道数量：{len(qualified_channel_map)}", flush=True)
+    qualified_channel_map = filter_best_streams(raw_channel_cache, core_mapping)
+    print(f"【阶段2完成】完成测速频道数量：{len(qualified_channel_map)}", flush=True)
     export_result(group_info, qualified_channel_map)
 
     urllib3.PoolManager().clear()
