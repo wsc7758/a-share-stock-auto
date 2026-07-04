@@ -21,6 +21,8 @@ SOURCE_FILE = "sources.txt"
 WHITE_LIST_FILE = "channel_whitelist.txt"
 OUTPUT_TXT = "tv.txt"
 STREAM_REQ_TIMEOUT = 1.5
+M3U8_CHECK_TIMEOUT = 2.0    # m3u8连通检测超时
+PLAY_CHUNK_TIMEOUT = 2.5     # 视频分片读取超时
 TASK_GLOBAL_TIMEOUT = 12
 BATCH_GLOBAL_TIMEOUT = 25
 MIN_VERTICAL_RES = 1080
@@ -54,13 +56,30 @@ def get_stream_priority(url: str) -> int:
         return 0
     return 1
 
-def stream_quality_detect(url: str) -> tuple[float, int]:
-    headers = {"User-Agent": "Mozilla/5.0 AndroidTV", "Connection": "close"}
+# --------------------------新增：完整链路检测（404延迟测速 + m3u8连通校验）--------------------------
+def full_stream_detect(url: str) -> tuple[float, int, bool, bool, int]:
+    """
+    返回元组：(延迟s, 垂直分辨率, 是否标准M3U8, 可播放, HTTP状态码)
+    分层检测逻辑：
+    1. HEAD测速，记录延迟+状态码，捕获404/403/5xx
+    2. 状态码正常则GET拉取m3u8，校验#EXTM3U标识（区分假网页链接）
+    3. 读取视频分片，确认存在真实视频数据
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 AndroidTV",
+        "Connection": "close",
+        "Referer": "https://tv.cctv.com/"
+    }
     delay = 9999.0
     max_res = 0
-    start = time.time()
+    is_valid_m3u8 = False
+    can_play = False
+    status_code = 0
+    start_total = time.time()
+
+    # 第一层：HEAD测速，捕获404/403/5xx，计算响应延迟
     try:
-        resp = requests.head(
+        head_resp = requests.head(
             url,
             headers=headers,
             timeout=STREAM_REQ_TIMEOUT,
@@ -68,20 +87,78 @@ def stream_quality_detect(url: str) -> tuple[float, int]:
             verify=False,
             allow_redirects=True
         )
-        delay = round(time.time() - start, 3)
-        if 200 <= resp.status_code < 400:
-            max_res = 1080
-    except Exception:
-        pass
-    return delay, max_res
+        delay = round(time.time() - start_total, 3)
+        status_code = head_resp.status_code
+        # 非2xx/3xx直接判定失效（包含404、403、500等）
+        if not (200 <= status_code < 400):
+            if DEBUG_LOG:
+                print(f"【链接检测失败】{url} 状态码:{status_code} 延迟:{delay}s", flush=True)
+            return delay, max_res, is_valid_m3u8, can_play, status_code
+    except requests.exceptions.Timeout:
+        delay = round(time.time() - start_total, 3)
+        status_code = -1
+        if DEBUG_LOG:
+            print(f"【链接检测超时】{url} 延迟:{delay}s", flush=True)
+        return delay, max_res, is_valid_m3u8, can_play, status_code
+    except Exception as e:
+        delay = round(time.time() - start_total, 3)
+        status_code = -2
+        if DEBUG_LOG:
+            print(f"【链接检测异常】{url} 错误:{str(e)}", flush=True)
+        return delay, max_res, is_valid_m3u8, can_play, status_code
 
-def batch_subtask(url_group: list[tuple[int, str, str]]) -> dict[int, tuple[float, int]]:
+    # 第二层：拉取m3u8内容，校验标准HLS标识（区分跳转广告/空白网页）
+    try:
+        m3u8_resp = requests.get(
+            url,
+            headers=headers,
+            timeout=M3U8_CHECK_TIMEOUT,
+            stream=True,
+            verify=False,
+            allow_redirects=True
+        )
+        first_chunk = m3u8_resp.raw.read(256)
+        # 包含#EXTM3U标准头，判定为合法直播流文件
+        if b"#EXTM3U" in first_chunk:
+            is_valid_m3u8 = True
+            max_res = 1080
+        else:
+            if DEBUG_LOG:
+                print(f"【非标准M3U8】{url} 无#EXTM3U标识，跳转网页/广告", flush=True)
+            return delay, max_res, is_valid_m3u8, can_play, status_code
+    except Exception:
+        if DEBUG_LOG:
+            print(f"【M3U8文件拉取失败】{url}", flush=True)
+        return delay, max_res, is_valid_m3u8, can_play, status_code
+
+    # 第三层：读取视频分片，确认真实可播放
+    try:
+        play_resp = requests.get(
+            url,
+            headers=headers,
+            timeout=PLAY_CHUNK_TIMEOUT,
+            stream=True,
+            verify=False,
+            allow_redirects=True
+        )
+        video_chunk = play_resp.raw.read(4096)
+        if len(video_chunk) > 200:
+            can_play = True
+            if DEBUG_LOG:
+                print(f"【链接校验通过】{url} 延迟:{delay}s 状态码:{status_code} 合法M3U8 可播放", flush=True)
+    except Exception:
+        if DEBUG_LOG:
+            print(f"【无视频分片】{url} M3U8合法但无法读取播放数据", flush=True)
+
+    return delay, max_res, is_valid_m3u8, can_play, status_code
+
+def batch_subtask(url_group: list[tuple[int, str, str]]) -> dict[int, tuple[float, int, bool, bool, int]]:
     task_start = time.time()
     local_result = {}
     for real_idx, ch_name, url in url_group:
         if time.time() - task_start >= TASK_GLOBAL_TIMEOUT:
             break
-        local_result[real_idx] = stream_quality_detect(url)
+        local_result[real_idx] = full_stream_detect(url)
     return local_result
 
 def load_source_list() -> list[str]:
@@ -212,18 +289,27 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]], core_mapping: dic
 
     ch_temp = defaultdict(list)
     for idx, ch_name, url in ch_url_index:
-        delay, res = task_result.get(idx, (9999, 0))
-        ch_temp[ch_name].append((url, get_stream_priority(url), delay, -res))
+        delay, res, is_m3u8_valid, can_play, status = task_result.get(idx, (9999, 0, False, False, -99))
+        prio = get_stream_priority(url)
+        ch_temp[ch_name].append((url, prio, delay, -res, is_m3u8_valid, can_play, status))
     curr = 0
     for ch_name, eval_res in ch_temp.items():
         curr += 1
         print(f"【阶段2测速进度】{curr}/{total_ch} 完成频道：{ch_name}", flush=True)
-        eval_res.sort(key=lambda x: (x[1], x[2], x[3]))
-        qualified = [item for item in eval_res if -item[3] >= MIN_VERTICAL_RES]
+        # 排序规则：优先官方源(0) → 延迟从小到大 → 分辨率从高到低
+        eval_res.sort(key=lambda x: (x[2], x[1], x[3]))
+        qualified = []
+        for item in eval_res:
+            url, prio, delay, neg_h, is_m3u8_valid, can_play, status = item
+            real_h = -neg_h
+            # 四重过滤条件：无404/异常状态 + 标准M3U8 + 可播放分片 + 分辨率≥1080
+            if status >= 200 and status < 400 and is_m3u8_valid and can_play and real_h >= MIN_VERTICAL_RES:
+                qualified.append(item)
         print(f"【频道统计】{ch_name} 达标链接总数：{len(qualified)}，单频道最大留存：{MAX_STREAM_PER_CHANNEL}", flush=True)
         final_map[ch_name] = [item[0] for item in qualified[:MAX_STREAM_PER_CHANNEL]]
     return final_map
 
+# 输出函数：分类表头严格匹配 分类名,#genre#
 def export_result(group_info: list, final_stream_map: dict[str, list[str]]):
     lines = []
     for group_name, ch_list in group_info:
