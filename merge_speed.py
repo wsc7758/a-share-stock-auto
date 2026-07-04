@@ -281,7 +281,7 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]], core_mapping: dic
             url, prio, not_match, delay, neg_h, is_43 = item
             if not_match:
                 continue
-            if (-neg_h) >= MIN_VERTICAL_RES and (not is_43):
+            if (not is_43) and ((-neg_h) >= MIN_VERTICAL_RES or (-neg_h == 0)):
                 qualified.append(item)
         print(f"【频道统计】{ch_name} 达标链接总数：{len(qualified)}，单频道最大留存：{MAX_STREAM_PER_CHANNEL}", flush=True)
         final_map[ch_name] = [item[0] for item in qualified[:MAX_STREAM_PER_CHANNEL]]
