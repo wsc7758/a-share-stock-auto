@@ -5,9 +5,8 @@ https://d.kstore.dev/download/11344/yunduan.txt
 https://wget.la/https://raw.githubusercontent.com/Supprise0901/TVBox_live/main/live.txt
 https://gh-proxy.com/https://raw.githubusercontent.com/maoystv/6/main/TV/live20220813.txt
 https://d.kstore.dev/download/12441/ds9.txt
-http://rihou.cc:555/gggg.nzk
 https://wget.la/https://raw.githubusercontent.com/Jsnzkpg/Jsnzkpg/Jsnzkpg/Jsnzkpg1.m3u
 https://cloud.7so.top/f/Bgw1H8/%E5%A4%A7%E6%94%B9.txt
 https://gh-proxy.com/https://raw.githubusercontent.com/hanhan8127/TVBox/main/live.txt
-http://127.0.0.1:5266/iptv.m3u
 https://cdn.jsdelivr.net/gh/suxuang/myIPTV@main/%E5%92%AA%E5%92%95%E7%9B%B4%E6%92%AD.txt
+http://rihou.cc:555/gggg.nzk
