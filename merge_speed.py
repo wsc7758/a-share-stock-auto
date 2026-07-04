@@ -39,14 +39,6 @@ def standardize_core_id(raw_name: str) -> str:
         return f"cctv{match.group(1)}"
     return s
 
-# 新增：判断是否4:3黑边标清画面，True代表要过滤
-def is_4_3_ratio(width: int, height: int) -> bool:
-    if width <= 0 or height <= 0:
-        return False
-    ratio = width / height
-    # 允许微小误差区间
-    return abs(ratio - 4 / 3) <= 0.03
-
 def is_stream_incompatible(url: str) -> bool:
     ban_list = {"127.", "192.168.", "10.", "172.", "localhost", "rtmp://", "igmp://", "rtsp://", "srt://", "udp://", "tcp://"}
     lower_url = url.lower()
@@ -62,25 +54,10 @@ def get_stream_priority(url: str) -> int:
         return 0
     return 1
 
-# 新增：读取m3u8获取分辨率宽高
-def get_m3u_res(headers, url: str) -> tuple[int, int]:
-    try:
-        resp = requests.get(url, headers=headers, timeout=1.0, verify=False, allow_redirects=True)
-        res_match = re.search(r"RESOLUTION=(\d+)x(\d+)", resp.text)
-        if res_match:
-            w = int(res_match.group(1))
-            h = int(res_match.group(2))
-            return w, h
-    except Exception:
-        pass
-    return 0, 0
-
-# 修改：返回元组增加宽、高
-def stream_quality_detect(url: str) -> tuple[float, int, int, int]:
+def stream_quality_detect(url: str) -> tuple[float, int]:
     headers = {"User-Agent": "Mozilla/5.0 AndroidTV", "Connection": "close"}
     delay = 9999.0
     max_res = 0
-    w, h = 0, 0
     start = time.time()
     try:
         resp = requests.head(
@@ -92,17 +69,13 @@ def stream_quality_detect(url: str) -> tuple[float, int, int, int]:
             allow_redirects=True
         )
         delay = round(time.time() - start, 3)
-        # 2xx/3xx 全部判定有效流
         if 200 <= resp.status_code < 400:
-            w, h = get_m3u_res(headers, url)
-            if h > 0:
-                max_res = h
+            max_res = 1080
     except Exception:
         pass
-    return delay, max_res, w, h
+    return delay, max_res
 
-# 修改：同步接收新增宽高参数
-def batch_subtask(url_group: list[tuple[int, str, str]]) -> dict[int, tuple[float, int, int, int]]:
+def batch_subtask(url_group: list[tuple[int, str, str]]) -> dict[int, tuple[float, int]]:
     task_start = time.time()
     local_result = {}
     for real_idx, ch_name, url in url_group:
@@ -150,7 +123,7 @@ def load_white_list() -> tuple[list, dict]:
     print(f"【阶段1-白名单加载】共读取分类数量：{len(group_info)}，频道核心映射数量：{len(core_to_fullname)}", flush=True)
     return group_info, core_to_fullname
 
-# 拉源：标准化ID匹配，不再精确比对全名
+# 拉源：标准化ID匹配，自动替换为白名单标准全名
 def fetch_channel_from_source(src_link: str, core_mapping: dict) -> list[tuple[str, str]]:
     headers = {"User-Agent": "Mozilla/5.0 Chrome/120.0.0.0 Safari/537.36", "Connection": "close"}
     result_pairs = []
@@ -182,7 +155,6 @@ def fetch_channel_from_source(src_link: str, core_mapping: dict) -> list[tuple[s
     except Exception as e:
         if DEBUG_LOG:
             print(f"【调试】源 {src_link} 拉取异常：{str(e)}", flush=True)
-    # 修复：补充返回语句
     return result_pairs
 
 def filter_best_streams(channel_raw_map: dict[str, list[str]], core_mapping: dict) -> dict[str, list[str]]:
@@ -193,6 +165,7 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]], core_mapping: dic
     fullname_to_core = {full_name:cid for cid,full_name in core_mapping.items()}
     print(f"【全部待测速频道列表】{list(channel_raw_map.keys())}", flush=True)
     for ch_name, url_list in channel_raw_map.items():
+        target_cid = fullname_to_core[ch_name]
         for url in url_list:
             ch_url_index.append((curr_idx, ch_name, url))
             curr_idx += 1
@@ -237,30 +210,20 @@ def filter_best_streams(channel_raw_map: dict[str, list[str]], core_mapping: dic
             pool_tmp.clear()
             print(f"【批次完成】{start+1}~{batch_end_idx} 线程池已全部清空，直接进入下一批次", flush=True)
 
-    # 存储元组新增宽、高
     ch_temp = defaultdict(list)
     for idx, ch_name, url in ch_url_index:
-        delay, res, w, h = task_result.get(idx, (9999, 0, 0, 0))
-        prio = get_stream_priority(url)
-        ch_temp[ch_name].append((url, prio, delay, -res, w, h))
+        delay, res = task_result.get(idx, (9999, 0))
+        ch_temp[ch_name].append((url, get_stream_priority(url), delay, -res))
     curr = 0
     for ch_name, eval_res in ch_temp.items():
         curr += 1
         print(f"【阶段2测速进度】{curr}/{total_ch} 完成频道：{ch_name}", flush=True)
-        # 排序：优先级、延迟、分辨率
         eval_res.sort(key=lambda x: (x[1], x[2], x[3]))
-        qualified = []
-        for item in eval_res:
-            url, prio, delay, neg_h, w, h = item
-            real_h = -neg_h
-            # 过滤条件：分辨率达标 + 不是4:3黑边画面
-            if real_h >= MIN_VERTICAL_RES and not is_4_3_ratio(w, h):
-                qualified.append(item)
+        qualified = [item for item in eval_res if -item[3] >= MIN_VERTICAL_RES]
         print(f"【频道统计】{ch_name} 达标链接总数：{len(qualified)}，单频道最大留存：{MAX_STREAM_PER_CHANNEL}", flush=True)
         final_map[ch_name] = [item[0] for item in qualified[:MAX_STREAM_PER_CHANNEL]]
     return final_map
 
-# 输出函数：分类表头严格匹配 分类名,#genre#
 def export_result(group_info: list, final_stream_map: dict[str, list[str]]):
     lines = []
     for group_name, ch_list in group_info:
@@ -293,7 +256,6 @@ def main():
                 print("【警告】单个直播源拉取超时，自动跳过", flush=True)
             except Exception as e:
                 print(f"【警告】直播源处理异常：{str(e)}", flush=True)
-    # 链接去重
     for ch in raw_channel_cache:
         raw_channel_cache[ch] = list(dict.fromkeys(raw_channel_cache[ch]))
     print(f"【阶段1完成】待测速频道总数量：{len(raw_channel_cache)}", flush=True)
