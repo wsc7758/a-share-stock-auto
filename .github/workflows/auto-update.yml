@@ -62,7 +62,7 @@ jobs:
           git push origin main
           echo "全新分拣后的tv.txt已推送至仓库"
 
-      # ========== 新增腾讯云COS上传步骤 无需改动上方原有逻辑 ==========
+      # ========== 修复后的腾讯云COS上传步骤 ==========
       - name: 安装腾讯云coscmd上传工具
         run: pip install coscmd
 
@@ -73,7 +73,6 @@ jobs:
           COS_BUCKET: ${{ secrets.COS_BUCKET }}
           COS_REGION: ${{ secrets.COS_REGION }}
         run: |
-          coscmd config -a $COS_SECRET_ID -s $COS_SECRET_KEY -b $COS_BUCKET -r $COS_REGION
-          # 本地tv.txt 上传至桶根目录，同名直接覆盖
+          coscmd config -a "$COS_SECRET_ID" -s "$COS_SECRET_KEY" -b "$COS_BUCKET" -r "$COS_REGION"
           coscmd upload tv.txt tv.txt
           echo "✅ tv.txt 已同步覆盖至腾讯云COS存储桶"
