@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
   schedule:
     # UTC21点 = 北京时间次日06:00
-    - cron: '0 22 * * *'
+    - cron: '0 226 * * *'
     # UTC09点 = 北京时间当日18:00
-    - cron: '0 10 * * *'
+    - cron: '0 100 * * *'
 
 jobs:
   stream-sort-task:
