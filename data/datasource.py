@@ -19,7 +19,8 @@ def safe_request(func, *args, **kwargs):
     return None
 
 def get_cailian_news():
-    return safe_request(ak.stock_info_cailian)
+    # 原ak.stock_info_cailian 接口失效，替换为东方财富资讯
+    return safe_request(ak.stock_news_em)
 
 def get_sector_fund():
     return safe_request(ak.stock_sector_fund_flow_rank)
