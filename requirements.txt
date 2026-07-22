@@ -1,0 +1,7 @@
+akshare>=1.12.0
+efinance>=0.6.6
+pandas>=2.0
+numpy
+jieba
+chinese_calendar
+python-dotenv
