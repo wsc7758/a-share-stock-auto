@@ -1,6 +1,6 @@
 # ===================== 行情周期参数 =====================
 RECENT_DAY = 10
-HOT_SCORE_THRESHOLD = 60
+HOT_SCORE_THRESHOLD = 0
 LEADER_NUM = 3
 
 # 基础过滤
