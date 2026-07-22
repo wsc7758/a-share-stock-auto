@@ -1,3 +1,9 @@
+import sys
+import os
+# 将项目根目录加入Python检索路径
+ROOT_PATH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT_PATH not in sys.path:
+    sys.path.insert(0, ROOT_PATH)
 from datetime import date
 import chinese_calendar
 from exporter.md_exporter import export_md
