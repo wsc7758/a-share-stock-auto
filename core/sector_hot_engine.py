@@ -10,10 +10,11 @@ def analyze_hot_sector():
     fund_df = get_sector_fund()
     source_type = "东方财富资金接口"
 
-    # 第一层容错：东方财富资金接口失效 → 切换申万行业指数（仅涨跌幅，无资金）
+    # 第一层容错：东方财富资金接口失效 → 切换申万一级行业指数（仅涨跌幅，无资金）
     if fund_df is None or fund_df.empty:
         print("⚠️东方财富板块资金接口访问失败，切换【申万一级行业】备用数据源，资金权重归零")
-        fund_df = safe_request(ak.sw_index_spot)
+        # 修复正确接口名称 ak.sw_spot_index()
+        fund_df = safe_request(ak.sw_spot_index)
         source_type = "申万行业备用接口"
         if fund_df is None or fund_df.empty:
             print("❌所有板块数据源全部获取失败")
@@ -21,11 +22,11 @@ def analyze_hot_sector():
         # 统一字段名称，适配后续代码
         fund_df.rename(columns={"指数名称": "板块名称"}, inplace=True)
         fund_df["主力净流入-亿"] = 0
-        # 申万接口涨跌幅字段名称
+        # 申万接口涨跌幅字段
         if "涨跌幅" not in fund_df.columns:
             fund_df["涨跌幅"] = fund_df["涨跌"]
 
-    # 财联社新闻（接口已失效，保留兼容）
+    # 财联社新闻（接口失效，保留兼容）
     news_df = get_cailian_news()
     word_freq = {}
     if news_df is not None and not news_df.empty:
