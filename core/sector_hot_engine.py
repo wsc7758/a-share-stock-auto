@@ -6,8 +6,11 @@ from core.market_sentiment import calc_sentiment_score
 
 def analyze_hot_sector():
     fund_df = get_sector_fund()
-    if fund_df is None:
-        raise Exception("板块资金数据获取失败")
+    if fund_df is None or fund_df.empty:
+        print("⚠️板块资金接口获取失败，当前云端网络环境受限，任务终止")
+        # 返回空df，上层识别后结束流程，不再抛出崩溃异常
+        import pandas as pd
+        return pd.DataFrame(), {}
     news_df = get_cailian_news()
     word_freq = {}
     if news_df is not None and not news_df.empty:
