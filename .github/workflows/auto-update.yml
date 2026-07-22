@@ -35,7 +35,7 @@ jobs:
         run: |
           git config --global user.name "StockBot"
           git config --global user.email "bot@stock.local"
-          git add output/ archive/ runtime/logs/
+          git add .
           # 没有新文件则跳过提交，避免空commit
           if ! git diff --quiet --cached; then
             git commit -m "🤖 自动更新选股结果 $(date +%Y-%m-%d)"
