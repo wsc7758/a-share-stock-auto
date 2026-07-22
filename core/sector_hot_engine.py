@@ -1,7 +1,6 @@
 import jieba
 import pandas as pd
-import akshare as ak
-from data.datasource import get_cailian_news, get_sector_fund, safe_request
+from data.datasource import get_cailian_news, get_sector_fund
 from config.settings import HOT_SCORE_THRESHOLD
 from core.market_sentiment import calc_sentiment_score
 
@@ -10,23 +9,30 @@ def analyze_hot_sector():
     fund_df = get_sector_fund()
     source_type = "东方财富资金接口"
 
-    # 第一层容错：东方财富资金接口失效 → 切换申万一级行业指数（仅涨跌幅，无资金）
+    # 东方财富接口失效：使用内置静态行业板块列表，不再访问任何外网接口
     if fund_df is None or fund_df.empty:
-        print("⚠️东方财富板块资金接口访问失败，切换【申万一级行业】备用数据源，资金权重归零")
-        # 修复正确接口名称 ak.sw_spot_index()
-        fund_df = safe_request(ak.sw_spot_index)
-        source_type = "申万行业备用接口"
-        if fund_df is None or fund_df.empty:
-            print("❌所有板块数据源全部获取失败")
-            return pd.DataFrame(), {}
-        # 统一字段名称，适配后续代码
-        fund_df.rename(columns={"指数名称": "板块名称"}, inplace=True)
-        fund_df["主力净流入-亿"] = 0
-        # 申万接口涨跌幅字段
-        if "涨跌幅" not in fund_df.columns:
-            fund_df["涨跌幅"] = fund_df["涨跌"]
+        print("⚠️东方财富板块资金接口访问失败，启用【内置静态板块列表】，资金权重归零")
+        source_type = "内置静态板块"
+        static_sector_list = [
+            {"板块名称": "半导体", "主力净流入-亿": 0, "涨跌幅": 0},
+            {"板块名称": "人工智能", "主力净流入-亿": 0, "涨跌幅": 0},
+            {"板块名称": "储能", "主力净流入-亿": 0, "涨跌幅": 0},
+            {"板块名称": "光伏", "主力净流入-亿": 0, "涨跌幅": 0},
+            {"板块名称": "锂电池", "主力净流入-亿": 0, "涨跌幅": 0},
+            {"板块名称": "军工", "主力净流入-亿": 0, "涨跌幅": 0},
+            {"板块名称": "医药", "主力净流入-亿": 0, "涨跌幅": 0},
+            {"板块名称": "房地产", "主力净流入-亿": 0, "涨跌幅": 0},
+            {"板块名称": "券商", "主力净流入-亿": 0, "涨跌幅": 0},
+            {"板块名称": "汽车整车", "主力净流入-亿": 0, "涨跌幅": 0},
+            {"板块名称": "机器人", "主力净流入-亿": 0, "涨跌幅": 0},
+            {"板块名称": "算力", "主力净流入-亿": 0, "涨跌幅": 0},
+            {"板块名称": "传媒", "主力净流入-亿": 0, "涨跌幅": 0},
+            {"板块名称": "煤炭", "主力净流入-亿": 0, "涨跌幅": 0},
+            {"板块名称": "有色", "主力净流入-亿": 0, "涨跌幅": 0},
+        ]
+        fund_df = pd.DataFrame(static_sector_list)
 
-    # 财联社新闻（接口失效，保留兼容）
+    # 财联社新闻（接口已失效，保留兼容代码）
     news_df = get_cailian_news()
     word_freq = {}
     if news_df is not None and not news_df.empty:
