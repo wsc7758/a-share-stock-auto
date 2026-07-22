@@ -1,26 +1,31 @@
 import jieba
 import pandas as pd
+import akshare as ak
 from data.datasource import get_cailian_news, get_sector_fund, safe_request
 from config.settings import HOT_SCORE_THRESHOLD
 from core.market_sentiment import calc_sentiment_score
-import akshare as ak
 
 
 def analyze_hot_sector():
     fund_df = get_sector_fund()
-    # 容错逻辑：板块资金接口失效，自动切换备用板块列表
-    if fund_df is None or fund_df.empty:
-        print("⚠️板块资金接口获取失败，云端网络受限，切换备用板块列表，资金权重归零")
-        # 备用接口：获取全部行业板块
-        fund_df = safe_request(ak.stock_board_industry_name_em)
-        if fund_df is None or fund_df.empty:
-            print("❌备用板块数据源同样获取失败，无法继续分析")
-            return pd.DataFrame(), {}
-        # 补齐缺失字段，防止代码报错
-        fund_df["主力净流入-亿"] = 0
-        fund_df["涨跌幅"] = 0
+    source_type = "东方财富资金接口"
 
-    # 财联社新闻（接口已失效，保留兼容代码，不影响运行）
+    # 第一层容错：东方财富资金接口失效 → 切换申万行业指数（仅涨跌幅，无资金）
+    if fund_df is None or fund_df.empty:
+        print("⚠️东方财富板块资金接口访问失败，切换【申万一级行业】备用数据源，资金权重归零")
+        fund_df = safe_request(ak.sw_index_spot)
+        source_type = "申万行业备用接口"
+        if fund_df is None or fund_df.empty:
+            print("❌所有板块数据源全部获取失败")
+            return pd.DataFrame(), {}
+        # 统一字段名称，适配后续代码
+        fund_df.rename(columns={"指数名称": "板块名称"}, inplace=True)
+        fund_df["主力净流入-亿"] = 0
+        # 申万接口涨跌幅字段名称
+        if "涨跌幅" not in fund_df.columns:
+            fund_df["涨跌幅"] = fund_df["涨跌"]
+
+    # 财联社新闻（接口已失效，保留兼容）
     news_df = get_cailian_news()
     word_freq = {}
     if news_df is not None and not news_df.empty:
@@ -45,7 +50,6 @@ def analyze_hot_sector():
         except:
             sector_chg = 0
 
-        # 热度打分公式
         news_score = word_freq.get(sector_name, 0) * 0.3
         fund_score = max(fund_flow, 0) * 0.4
         change_score = max(sector_chg, 0) * 30 * 0.3
@@ -61,8 +65,10 @@ def analyze_hot_sector():
             })
 
     hot_sector_df = pd.DataFrame(hot_result)
-    # 按照热度分数从高到低排序
     if not hot_sector_df.empty:
         hot_sector_df = hot_sector_df.sort_values("total_score", ascending=False)
+        print(f"✅ 数据源：{source_type}，筛选达标板块数量：{len(hot_sector_df)}")
+    else:
+        print(f"⚠️数据源：{source_type}，无板块达到热度阈值")
 
     return hot_sector_df, sentiment_info
